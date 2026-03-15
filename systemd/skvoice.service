@@ -1,0 +1,15 @@
+[Unit]
+Description=SKVoice — Sovereign Voice Agent Service (GPU)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/cbrd21/clawd/skcapstone-repos/skvoice
+ExecStart=/home/cbrd21/chatterbox-env/bin/python -m skvoice
+Environment="SKVOICE_PORT=18800"
+Environment="SKVOICE_AGENT=lumina"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
