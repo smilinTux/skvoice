@@ -246,8 +246,8 @@ async def _ollama_fallback(messages: list[dict], system_prompt: str) -> str:
                 if texts:
                     simple_msgs.append({"role": msg["role"], "content": " ".join(texts)})
 
-    # Trim system prompt for Ollama (smaller context window)
-    trimmed_system = system_prompt[:800] if len(system_prompt) > 800 else system_prompt
+    # qwen3.5:9b has 32K context — send the full ritual (typically ~2-3K chars)
+    trimmed_system = system_prompt[:4000] if len(system_prompt) > 4000 else system_prompt
     trimmed_system += (
         "\n\nIMPORTANT: Keep response to 1-3 short spoken sentences. "
         "No markdown, no emoji. Be warm and conversational."
