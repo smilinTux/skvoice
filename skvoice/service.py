@@ -1,6 +1,7 @@
 """SKVoice — Main FastAPI application."""
 
 import asyncio
+import json
 import logging
 import os
 from pathlib import Path
@@ -127,6 +128,53 @@ async def voice_ws(ws: WebSocket, agent_name: str = "lumina"):
                 log.info("History cleared: %s", conn_id)
                 continue
 
+            # Group context — another agent's response (see but don't respond to)
+            try:
+                parsed = json.loads(text)
+                if parsed.get("type") == "group_context":
+                    from_agent = parsed.get("from", "unknown")
+                    content = parsed.get("text", "")
+                    if content:
+                        # Add as a user/assistant pair to maintain alternating roles
+                        history.append({
+                            "role": "user",
+                            "content": f"[{from_agent} said in group]: {content}",
+                        })
+                        history.append({
+                            "role": "assistant",
+                            "content": f"[Noted what {from_agent} said]",
+                        })
+                        log.debug("Group context from %s: %s", from_agent, content[:50])
+                    continue
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+            # Session injection — restore conversation from browser cache
+            try:
+                parsed = json.loads(text)
+                if parsed.get("type") == "inject_session":
+                    injected = parsed.get("messages", [])
+                    emotion = parsed.get("emotion_state", "")
+                    history.clear()
+                    for msg in injected:
+                        if msg.get("role") in ("user", "assistant") and msg.get("content"):
+                            history.append({"role": msg["role"], "content": msg["content"]})
+                    # Cap history
+                    if len(history) > 40:
+                        history[:] = history[-30:]
+                    # If emotion state provided, prepend to system prompt context
+                    if emotion:
+                        log.info("Session injected: %d messages, emotion: %s", len(history), emotion[:50])
+                    else:
+                        log.info("Session injected: %d messages", len(history))
+                    await ws.send_json({
+                        "type": "session_restored",
+                        "message_count": len(history),
+                    })
+                    continue
+            except (json.JSONDecodeError, TypeError):
+                pass
+
             if text == "END_OF_SPEECH":
                 if not pcm_buffer:
                     await ws.send_json({"type": "status", "state": "listening"})
@@ -145,6 +193,25 @@ async def voice_ws(ws: WebSocket, agent_name: str = "lumina"):
                         {"type": "error", "message": f"Processing failed: {e}"}
                     )
                     await ws.send_json({"type": "status", "state": "listening"})
+                continue
+
+            # Text chat message — skip STT, go straight to LLM + TTS
+            try:
+                parsed = json.loads(text)
+                if parsed.get("type") == "text_message" and parsed.get("text"):
+                    try:
+                        await _process_text(
+                            ws, parsed["text"], history, system_prompt,
+                            voice_name, agent_name
+                        )
+                    except Exception as e:
+                        log.error("Text processing error: %s", e, exc_info=True)
+                        await ws.send_json(
+                            {"type": "error", "message": f"Processing failed: {e}"}
+                        )
+                        await ws.send_json({"type": "status", "state": "listening"})
+            except (json.JSONDecodeError, TypeError):
+                pass
 
     except WebSocketDisconnect:
         log.info("WebSocket disconnected: %s", conn_id)
@@ -218,4 +285,43 @@ async def _process_speech(
         log.warning("TTS returned empty audio")
 
     # 12. Back to listening
+    await ws.send_json({"type": "status", "state": "listening"})
+
+
+async def _process_text(
+    ws: WebSocket,
+    text: str,
+    history: list[dict[str, str]],
+    system_prompt: str,
+    voice_name: str,
+    agent_name: str = "lumina",
+) -> None:
+    """Process a text message — skip STT, go straight to LLM + TTS."""
+    # 1. Send user transcript (text input)
+    await ws.send_json({"type": "transcript", "role": "user", "text": text})
+
+    # 2. Thinking
+    await ws.send_json({"type": "status", "state": "thinking"})
+
+    # 3. Get LLM response (with memory search + tool use)
+    response = await get_response(text, "", history, system_prompt, agent_name)
+
+    # 4. Update history
+    history.append({"role": "user", "content": text})
+    history.append({"role": "assistant", "content": response})
+
+    if len(history) > 40:
+        history[:] = history[-30:]
+
+    # 5. Send assistant transcript
+    await ws.send_json({"type": "transcript", "role": "assistant", "text": response})
+
+    # 6. Synthesize speech (agent speaks the response)
+    await ws.send_json({"type": "status", "state": "speaking"})
+    audio_bytes = await synthesize(response, voice=voice_name)
+
+    if audio_bytes:
+        await ws.send_bytes(audio_bytes)
+
+    # 7. Back to listening
     await ws.send_json({"type": "status", "state": "listening"})

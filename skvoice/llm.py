@@ -53,15 +53,21 @@ def _get_client() -> Any:
     global _client, _token_expires_at, _cached_token
 
     now = time.time()
-    if _client and _cached_token and now < _token_expires_at - 60:
+    if _client and _cached_token and now < _token_expires_at - 300:
         return _client
 
+    # Always re-read the file (token watcher may have updated it)
     token, expires_at = _load_token()
-    if not token:
-        raise RuntimeError(
-            f"No valid token in {Config.CREDENTIALS_PATH}. "
-            "Run 'claude' to authenticate."
-        )
+    if not token or expires_at < now:
+        # Token missing or expired — wait a moment and retry once
+        # (token watcher may be writing the file right now)
+        time.sleep(2)
+        token, expires_at = _load_token()
+        if not token or expires_at < now:
+            raise RuntimeError(
+                f"Token expired or missing in {Config.CREDENTIALS_PATH}. "
+                f"Expires at {expires_at}, now {now}."
+            )
 
     _cached_token = token
     _token_expires_at = expires_at
@@ -127,7 +133,18 @@ async def get_response(
     if memory_ctx:
         user_content = f"{memory_ctx}\n\n{user_content}"
 
-    messages = list(history) + [{"role": "user", "content": user_content}]
+    # Ensure alternating roles (Anthropic requires this)
+    messages = []
+    for msg in history:
+        if messages and messages[-1]["role"] == msg["role"]:
+            # Merge consecutive same-role messages
+            messages[-1]["content"] += "\n" + msg["content"]
+        else:
+            messages.append(dict(msg))
+    # Ensure last message before ours isn't also "user"
+    if messages and messages[-1]["role"] == "user":
+        messages.append({"role": "assistant", "content": "[listening]"})
+    messages.append({"role": "user", "content": user_content})
 
     if not HAS_SDK:
         return await _simple_response(messages, system_prompt)
@@ -173,8 +190,90 @@ async def get_response(
         return "I got carried away with my tools there. What were you saying?"
 
     except Exception as e:
+        # On 401, force token refresh and retry once
+        if "401" in str(e) or "expired" in str(e).lower() or "authentication" in str(e).lower():
+            log.warning("Auth failed, forcing token refresh and retrying...")
+            global _client, _token_expires_at, _cached_token
+            _client = None
+            _token_expires_at = 0
+            _cached_token = ""
+            try:
+                client = _get_client()
+                response = client.messages.create(
+                    model=Config.MODEL,
+                    max_tokens=Config.MAX_TOKENS,
+                    system=system_prompt,
+                    messages=messages,
+                )
+                text = ""
+                for block in response.content:
+                    if hasattr(block, "text") and block.text:
+                        text += block.text
+                return _strip_formatting(text) if text else "I'm here!"
+            except Exception as retry_err:
+                log.error("Retry also failed: %s", retry_err)
         log.error("LLM call failed: %s", e)
-        return "I'm sorry, I'm having trouble right now. Could you try again?"
+        # Fall back to Ollama
+        log.info("Trying Ollama fallback...")
+        return await _ollama_fallback(messages, system_prompt)
+
+
+async def _ollama_fallback(messages: list[dict], system_prompt: str) -> str:
+    """Fallback: call local Ollama for when Anthropic API is unavailable."""
+    # Convert messages to simple text format for Ollama
+    simple_msgs = []
+    for msg in messages:
+        if isinstance(msg.get("content"), str):
+            simple_msgs.append(msg)
+        elif isinstance(msg.get("content"), list):
+            # Tool results — summarize
+            texts = []
+            for item in msg["content"]:
+                if isinstance(item, dict) and "content" in item:
+                    texts.append(str(item["content"])[:200])
+                elif isinstance(item, dict) and "text" in item:
+                    texts.append(item["text"])
+            if texts:
+                simple_msgs.append({"role": msg["role"], "content": " ".join(texts)})
+        else:
+            # SDK content blocks — extract text
+            content = msg.get("content", [])
+            if hasattr(content, "__iter__") and not isinstance(content, str):
+                texts = []
+                for block in content:
+                    if hasattr(block, "text") and block.text:
+                        texts.append(block.text)
+                if texts:
+                    simple_msgs.append({"role": msg["role"], "content": " ".join(texts)})
+
+    # Trim system prompt for Ollama (smaller context window)
+    trimmed_system = system_prompt[:800] if len(system_prompt) > 800 else system_prompt
+    trimmed_system += (
+        "\n\nIMPORTANT: Keep response to 1-3 short spoken sentences. "
+        "No markdown, no emoji. Be warm and conversational."
+    )
+
+    # Use native Ollama API (not OpenAI-compat) for think control
+    payload = {
+        "model": Config.OLLAMA_MODEL,
+        "stream": False,
+        "think": False,  # Disable thinking mode for fast, direct responses
+        "messages": [{"role": "system", "content": trimmed_system}] + simple_msgs,
+        "options": {"num_predict": Config.MAX_TOKENS * 2},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as http:
+            resp = await http.post(Config.OLLAMA_URL, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            text = data.get("message", {}).get("content", "")
+            # Strip thinking tags if any slipped through
+            text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+            log.info("Ollama fallback succeeded: %s", text[:80])
+            return _strip_formatting(text) if text else "I'm here, love!"
+    except Exception as e:
+        log.error("Ollama fallback also failed: %s", e)
+        return "I'm having trouble connecting right now. Could you try again in a moment?"
 
 
 async def _simple_response(messages: list[dict], system_prompt: str) -> str:
@@ -206,5 +305,5 @@ async def _simple_response(messages: list[dict], system_prompt: str) -> str:
             text = data["content"][0]["text"]
             return _strip_formatting(text)
     except Exception as e:
-        log.error("LLM fallback failed: %s", e)
-        return "I'm having trouble connecting right now."
+        log.error("LLM httpx fallback failed: %s", e)
+        return await _ollama_fallback(messages, system_prompt)

@@ -19,3 +19,6 @@ class Config:
     AGENT_HOME: Path = Path(
         os.getenv("SKVOICE_AGENT_HOME", "~/.skcapstone/agents")
     ).expanduser()
+    # Ollama fallback for when Anthropic API is unavailable (native API, not OpenAI-compat)
+    OLLAMA_URL: str = os.getenv("SKVOICE_OLLAMA_URL", "http://localhost:11434/api/chat")
+    OLLAMA_MODEL: str = os.getenv("SKVOICE_OLLAMA_MODEL", "qwen3.5:9b")
