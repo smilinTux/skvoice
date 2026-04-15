@@ -10,7 +10,7 @@ class Config:
     STT_URL: str = os.getenv(
         "SKVOICE_STT_URL", "http://localhost:18794/v1/audio/transcriptions"
     )
-    TTS_URL: str = os.getenv("SKVOICE_TTS_URL", "http://localhost:18793/audio/speech")
+    TTS_URL: str = os.getenv("SKVOICE_TTS_URL", "http://192.168.0.100:18793/audio/speech")
     MODEL: str = os.getenv("SKVOICE_MODEL", "claude-sonnet-4-6")
     MAX_TOKENS: int = int(os.getenv("SKVOICE_MAX_TOKENS", "200"))
     CREDENTIALS_PATH: Path = Path(
