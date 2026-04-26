@@ -186,8 +186,11 @@ Open a browser to `http://localhost:18800/voice/myagent` or connect via WebSocke
 | `SKVOICE_AGENT` | `lumina` | Default agent name |
 | `SKVOICE_MODEL` | `claude-sonnet-4-20250514` | LLM model |
 | `SKVOICE_MAX_TOKENS` | `300` | Max response tokens |
-| `SKVOICE_WHISPER_URL` | `http://localhost:18794` | faster-whisper endpoint |
-| `SKVOICE_TTS_URL` | `http://localhost:18793` | Chatterbox TTS endpoint |
+| `SKVOICE_STT_URL` | `http://localhost:18794/v1/audio/transcriptions` | Full STT endpoint URL (overrides `_BASE`) |
+| `SKVOICE_TTS_URL` | `http://localhost:18793/audio/speech` | Full TTS endpoint URL (overrides `_BASE`) |
+| `SKVOICE_STT_BASE` | `http://localhost:18794` | STT base URL — standard path appended |
+| `SKVOICE_TTS_BASE` | `http://localhost:18793` | TTS base URL — standard path appended |
+| `SKVOICE_WHISPER_URL` | — | Legacy alias for `SKVOICE_STT_BASE` |
 | `SKCAPSTONE_AGENT` | (from SKVOICE_AGENT) | Agent profile to load |
 
 ### systemd Service
@@ -199,20 +202,73 @@ systemctl --user enable --now skvoice
 
 ---
 
-## 🌐 Remote Access
+## 🌐 Remote Access & Distributed Deployment
+
+SKVoice is split into two layers:
+
+- **Orchestrator** — this service. Lightweight FastAPI/WebSocket layer.
+  Runs anywhere (laptop, agent home box, server).
+- **GPU services** — VoxCPM/Chatterbox TTS (port `18793`) and
+  faster-whisper STT (port `18794`). Live wherever the GPU is.
+
+In the simplest case both run on the same box and you don't need to
+touch anything. For a distributed deployment over Tailscale, point the
+orchestrator at the GPU host's tailnet name.
 
 ### With Tailscale (recommended)
-Install [Tailscale](https://tailscale.com/) on your GPU box and phone. Connect to your agent from anywhere through a private encrypted tunnel. No port forwarding, no cloud, no nothing.
+
+1. Install [Tailscale](https://tailscale.com/) on the GPU host and bring
+   it on the tailnet:
+   ```bash
+   sudo tailscale up --hostname=skworld-100 --ssh
+   ```
+2. From any other tailnet member, install SKVoice and tell it where the
+   GPU services live:
+   ```bash
+   pip install -e .
+   cat > ~/.config/skvoice/skvoice.env <<'EOF'
+   SKVOICE_PORT=18800
+   SKVOICE_AGENT=lumina
+   SKVOICE_TTS_BASE=http://skworld-100:18793
+   SKVOICE_STT_BASE=http://skworld-100:18794
+   EOF
+   systemctl --user enable --now skvoice
+   ```
+3. Voice traffic flows: `Browser → SKVoice (local) → STT/TTS (Tailscale → GPU host)`.
+
+The GPU host stays on the tailnet — only orchestrators move. Run as many
+orchestrators as you have agents; they all share the same STT/TTS
+backend.
+
+### Example deployment: noroc2027 + skworld-100
 
 ```
-Phone (Tailscale) → Home GPU (Tailscale) → SKVoice → Agent
+Browser ─ws──▶  noroc2027:18800 (skvoice orchestrator)
+                   │
+                   ├── STT ──▶ http://skworld-100:18794   (Tailscale)
+                   └── TTS ──▶ http://skworld-100:18793   (Tailscale)
 ```
+
+Drop this into `~/.config/skvoice/skvoice.env` on noroc2027:
+
+```bash
+SKVOICE_PORT=18800
+SKVOICE_AGENT=lumina
+SKVOICE_TTS_BASE=http://skworld-100:18793
+SKVOICE_STT_BASE=http://skworld-100:18794
+```
+
+(LAN fallback: replace `skworld-100` with `192.168.0.100` if the GPU
+host isn't on the tailnet yet.)
 
 ### With skchat proxy
-If you're running [skchat](https://github.com/smilinTux/skchat), it includes a WebSocket proxy that routes voice connections through the chat interface:
+
+If you're running [skchat](https://github.com/smilinTux/skchat), it
+includes a WebSocket proxy that routes voice connections through the
+chat interface:
 
 ```
-Browser → skchat (web) → SKVoice (GPU) → Agent
+Browser → skchat (web) → SKVoice (orchestrator) → STT/TTS (GPU)
 ```
 
 ---

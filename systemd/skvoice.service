@@ -1,15 +1,21 @@
 [Unit]
-Description=SKVoice — Sovereign Voice Agent Service (GPU)
-After=network.target
+Description=SKVoice — Sovereign Voice Agent Service (orchestrator)
+Documentation=https://github.com/smilinTux/skvoice
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/cbrd21/clawd/skcapstone-repos/skvoice
-ExecStart=/home/cbrd21/chatterbox-env/bin/python -m skvoice
-Environment="SKVOICE_PORT=18800"
-Environment="SKVOICE_AGENT=lumina"
-Restart=always
+WorkingDirectory=%h/clawd/skcapstone-repos/skvoice
+# Env defaults; override per-host by editing the EnvironmentFile.
+EnvironmentFile=-%h/.config/skvoice/skvoice.env
+Environment=SKVOICE_PORT=18800
+Environment=SKVOICE_AGENT=lumina
+ExecStart=%h/.skenv/bin/skvoice
+Restart=on-failure
 RestartSec=5
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=default.target
