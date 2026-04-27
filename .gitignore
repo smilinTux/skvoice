@@ -29,3 +29,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# setuptools-scm generated
+skvoice/_version.py
