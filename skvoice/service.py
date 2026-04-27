@@ -296,11 +296,14 @@ async def _process_text(
     voice_name: str,
     agent_name: str = "lumina",
 ) -> None:
-    """Process a text message — skip STT, go straight to LLM + TTS."""
-    # 1. Send user transcript (text input)
-    await ws.send_json({"type": "transcript", "role": "user", "text": text})
+    """Process a text message — skip STT, go straight to LLM + TTS.
 
-    # 2. Thinking
+    Note: the user's text is NOT echoed back as a transcript. The client
+    already rendered their own input on submit; echoing here would produce
+    a duplicate user-bubble. (Voice mode does echo, because the user has
+    not yet seen what STT heard.)
+    """
+    # 1. Thinking
     await ws.send_json({"type": "status", "state": "thinking"})
 
     # 3. Get LLM response (with memory search + tool use)
