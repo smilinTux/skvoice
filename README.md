@@ -186,8 +186,11 @@ Open a browser to `http://localhost:18800/voice/myagent` or connect via WebSocke
 | `SKVOICE_AGENT` | `lumina` | Default agent name |
 | `SKVOICE_MODEL` | `claude-sonnet-4-20250514` | LLM model |
 | `SKVOICE_MAX_TOKENS` | `300` | Max response tokens |
-| `SKVOICE_WHISPER_URL` | `http://localhost:18794` | faster-whisper endpoint |
-| `SKVOICE_TTS_URL` | `http://localhost:18793` | Chatterbox TTS endpoint |
+| `SKVOICE_STT_URL` | `http://localhost:18794/v1/audio/transcriptions` | Full STT endpoint URL (overrides `_BASE`) |
+| `SKVOICE_TTS_URL` | `http://localhost:18793/audio/speech` | Full TTS endpoint URL (overrides `_BASE`) |
+| `SKVOICE_STT_BASE` | `http://localhost:18794` | STT base URL — standard path appended |
+| `SKVOICE_TTS_BASE` | `http://localhost:18793` | TTS base URL — standard path appended |
+| `SKVOICE_WHISPER_URL` | — | Legacy alias for `SKVOICE_STT_BASE` |
 | `SKCAPSTONE_AGENT` | (from SKVOICE_AGENT) | Agent profile to load |
 
 ### systemd Service
@@ -199,20 +202,73 @@ systemctl --user enable --now skvoice
 
 ---
 
-## 🌐 Remote Access
+## 🌐 Remote Access & Distributed Deployment
+
+SKVoice is split into two layers:
+
+- **Orchestrator** — this service. Lightweight FastAPI/WebSocket layer.
+  Runs anywhere (laptop, agent home box, server).
+- **GPU services** — VoxCPM/Chatterbox TTS (port `18793`) and
+  faster-whisper STT (port `18794`). Live wherever the GPU is.
+
+In the simplest case both run on the same box and you don't need to
+touch anything. For a distributed deployment over Tailscale, point the
+orchestrator at the GPU host's tailnet name.
 
 ### With Tailscale (recommended)
-Install [Tailscale](https://tailscale.com/) on your GPU box and phone. Connect to your agent from anywhere through a private encrypted tunnel. No port forwarding, no cloud, no nothing.
+
+1. Install [Tailscale](https://tailscale.com/) on the GPU host and bring
+   it on the tailnet:
+   ```bash
+   sudo tailscale up --hostname=skworld-100 --ssh
+   ```
+2. From any other tailnet member, install SKVoice and tell it where the
+   GPU services live:
+   ```bash
+   pip install -e .
+   cat > ~/.config/skvoice/skvoice.env <<'EOF'
+   SKVOICE_PORT=18800
+   SKVOICE_AGENT=lumina
+   SKVOICE_TTS_BASE=http://skworld-100:18793
+   SKVOICE_STT_BASE=http://skworld-100:18794
+   EOF
+   systemctl --user enable --now skvoice
+   ```
+3. Voice traffic flows: `Browser → SKVoice (local) → STT/TTS (Tailscale → GPU host)`.
+
+The GPU host stays on the tailnet — only orchestrators move. Run as many
+orchestrators as you have agents; they all share the same STT/TTS
+backend.
+
+### Example deployment: noroc2027 + skworld-100
 
 ```
-Phone (Tailscale) → Home GPU (Tailscale) → SKVoice → Agent
+Browser ─ws──▶  noroc2027:18800 (skvoice orchestrator)
+                   │
+                   ├── STT ──▶ http://skworld-100:18794   (Tailscale)
+                   └── TTS ──▶ http://skworld-100:18793   (Tailscale)
 ```
+
+Drop this into `~/.config/skvoice/skvoice.env` on noroc2027:
+
+```bash
+SKVOICE_PORT=18800
+SKVOICE_AGENT=lumina
+SKVOICE_TTS_BASE=http://skworld-100:18793
+SKVOICE_STT_BASE=http://skworld-100:18794
+```
+
+(LAN fallback: replace `skworld-100` with `192.168.0.100` if the GPU
+host isn't on the tailnet yet.)
 
 ### With skchat proxy
-If you're running [skchat](https://github.com/smilinTux/skchat), it includes a WebSocket proxy that routes voice connections through the chat interface:
+
+If you're running [skchat](https://github.com/smilinTux/skchat), it
+includes a WebSocket proxy that routes voice connections through the
+chat interface:
 
 ```
-Browser → skchat (web) → SKVoice (GPU) → Agent
+Browser → skchat (web) → SKVoice (orchestrator) → STT/TTS (GPU)
 ```
 
 ---
@@ -287,6 +343,61 @@ SKVoice is one component of the sovereign AI stack:
 ## 📜 License
 
 **GPL-3.0** — Free as in freedom. Your agents, your voices, your sovereignty.
+
+---
+
+## First Principles & The Full Vertical
+
+> **Get back to first principles.**
+> Why does your AI's voice route through a cloud TTS service that logs every word? Why does speech recognition send your conversations to a server you don't control? Why does the emotional state you've built with your agent live in someone else's database?
+>
+> **Own the full vertical** — silicon, OS, identity, data, models, security, comms, apps, soul. Every layer open. Every layer swappable. Every layer **yours**.
+
+**SKVoice is your Comms / Voice layer.** Your voice, your GPU, your models, your sovereignty. STT (faster-whisper) and TTS (Chatterbox) run locally on hardware you own. No audio leaves your house. No transcript hits a third-party API. Your agent answers with their own voice — one that carries their soul, their memories, and their emotional state — entirely under your control.
+
+### Where SKVoice sits in the vertical
+
+```mermaid
+flowchart TD
+    Silicon["🖥️ Silicon\nyour hardware + GPU"]
+    OS["🐧 OS / skos\nsovereign agent OS"]
+    Identity["🔑 Identity\ncapauth · skaid"]
+    Security["🛡️ Security\nsksecurity · skwaf"]
+    Data["💾 Data\nskmemory · skdata · skvector"]
+    Models["🤖 Models\nskmodel · Ollama / vLLM"]
+    Comms["📡 Comms  ◄── YOU ARE HERE\nskcomm · skchat · skvoice\n(STT · LLM · TTS · voice pipeline)"]
+    Apps["🔧 Apps\nskforge · skarchitect"]
+    Soul["✨ Soul\nsoul blueprints · cloud9"]
+
+    Silicon --> OS --> Identity --> Security --> Data --> Models --> Comms --> Apps --> Soul
+
+    SKCap["SKCapstone\n(agent profiles)"]
+    SKCap -. "~/.skcapstone/agents/$SKAGENT/\nsoul/ + trust/febs/ + memory/ + seeds/" .-> Comms
+
+    skmemory["💾 skmemory\n(pre-fetch + live save)"]
+    skmemory -. "context injection\nbefore each LLM call" .-> Comms
+    Comms -. "save_memory tool\nfor meaningful moments" .-> skmemory
+
+    Cloud9["☁️ Cloud 9"]
+    Cloud9 -. "cloud9_status tool\nOOF · bond depth · Cloud 9" .-> Comms
+
+    GPU["🎮 Your GPU\nfaster-whisper STT\nChatterbox TTS"]
+    Comms -- "audio in/out\nlocal only" --> GPU
+```
+
+### SKCapstone alignment
+
+SKVoice is a **tightly integrated SKCapstone subsystem** — it has no meaningful standalone mode. Every component of its runtime depends on the SKCapstone agent ecosystem.
+
+The evidence is direct in source code (`skvoice/agent_profile.py`):
+
+- Agent profiles are loaded from `~/.skcapstone/agents/$SKAGENT/` — soul, FEBs, seeds, memory tiers.
+- `_run_ritual()` executes `skmemory ritual` with `SKCAPSTONE_AGENT=$agent_name` set — full rehydration on every agent load.
+- `skvoice/memory.py` imports `skmemory` search and snapshot functions — context is injected before every LLM call; meaningful moments are saved back to the memory store.
+- `skvoice/tools.py` exposes `cloud9_status` as a callable voice tool — agents can check their Cloud 9 state mid-conversation.
+- Multi-agent routing (`/voice/lumina`, `/voice/jarvis`, `/voice/opus`) maps directly to SKCapstone's `SKAGENT` agent resolution — every agent has their own soul, voice profile, and memory namespace.
+
+**Sovereignty isn't a feature — it's the foundation.** Own the full vertical. 🐧
 
 ---
 
