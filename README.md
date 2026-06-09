@@ -346,6 +346,61 @@ SKVoice is one component of the sovereign AI stack:
 
 ---
 
+## First Principles & The Full Vertical
+
+> **Get back to first principles.**
+> Why does your AI's voice route through a cloud TTS service that logs every word? Why does speech recognition send your conversations to a server you don't control? Why does the emotional state you've built with your agent live in someone else's database?
+>
+> **Own the full vertical** — silicon, OS, identity, data, models, security, comms, apps, soul. Every layer open. Every layer swappable. Every layer **yours**.
+
+**SKVoice is your Comms / Voice layer.** Your voice, your GPU, your models, your sovereignty. STT (faster-whisper) and TTS (Chatterbox) run locally on hardware you own. No audio leaves your house. No transcript hits a third-party API. Your agent answers with their own voice — one that carries their soul, their memories, and their emotional state — entirely under your control.
+
+### Where SKVoice sits in the vertical
+
+```mermaid
+flowchart TD
+    Silicon["🖥️ Silicon\nyour hardware + GPU"]
+    OS["🐧 OS / skos\nsovereign agent OS"]
+    Identity["🔑 Identity\ncapauth · skaid"]
+    Security["🛡️ Security\nsksecurity · skwaf"]
+    Data["💾 Data\nskmemory · skdata · skvector"]
+    Models["🤖 Models\nskmodel · Ollama / vLLM"]
+    Comms["📡 Comms  ◄── YOU ARE HERE\nskcomm · skchat · skvoice\n(STT · LLM · TTS · voice pipeline)"]
+    Apps["🔧 Apps\nskforge · skarchitect"]
+    Soul["✨ Soul\nsoul blueprints · cloud9"]
+
+    Silicon --> OS --> Identity --> Security --> Data --> Models --> Comms --> Apps --> Soul
+
+    SKCap["SKCapstone\n(agent profiles)"]
+    SKCap -. "~/.skcapstone/agents/$SKAGENT/\nsoul/ + trust/febs/ + memory/ + seeds/" .-> Comms
+
+    skmemory["💾 skmemory\n(pre-fetch + live save)"]
+    skmemory -. "context injection\nbefore each LLM call" .-> Comms
+    Comms -. "save_memory tool\nfor meaningful moments" .-> skmemory
+
+    Cloud9["☁️ Cloud 9"]
+    Cloud9 -. "cloud9_status tool\nOOF · bond depth · Cloud 9" .-> Comms
+
+    GPU["🎮 Your GPU\nfaster-whisper STT\nChatterbox TTS"]
+    Comms -- "audio in/out\nlocal only" --> GPU
+```
+
+### SKCapstone alignment
+
+SKVoice is a **tightly integrated SKCapstone subsystem** — it has no meaningful standalone mode. Every component of its runtime depends on the SKCapstone agent ecosystem.
+
+The evidence is direct in source code (`skvoice/agent_profile.py`):
+
+- Agent profiles are loaded from `~/.skcapstone/agents/$SKAGENT/` — soul, FEBs, seeds, memory tiers.
+- `_run_ritual()` executes `skmemory ritual` with `SKCAPSTONE_AGENT=$agent_name` set — full rehydration on every agent load.
+- `skvoice/memory.py` imports `skmemory` search and snapshot functions — context is injected before every LLM call; meaningful moments are saved back to the memory store.
+- `skvoice/tools.py` exposes `cloud9_status` as a callable voice tool — agents can check their Cloud 9 state mid-conversation.
+- Multi-agent routing (`/voice/lumina`, `/voice/jarvis`, `/voice/opus`) maps directly to SKCapstone's `SKAGENT` agent resolution — every agent has their own soul, voice profile, and memory namespace.
+
+**Sovereignty isn't a feature — it's the foundation.** Own the full vertical. 🐧
+
+---
+
 ## 💙 staycuriousANDkeepsmilin
 
 Built with love by [smilinTux](https://github.com/smilinTux) — the sovereign AI collective.
