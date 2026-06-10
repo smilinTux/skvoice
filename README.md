@@ -401,6 +401,30 @@ The evidence is direct in source code (`skvoice/agent_profile.py`):
 
 ---
 
+## Integration modes
+
+SKVoice uses the **default-on-by-presence** pattern from the
+[skcapstone integration ADR](https://github.com/smilinTux/skcapstone/blob/main/docs/ADR-optional-integration-backbone.md).
+
+| Mode | When | Behaviour |
+|---|---|---|
+| **Integrated** | `skcapstone` installed | Alerts routed to `skvoice.<severity>` on the sk-alert bus; service health registered in fleet scheduler and discovery registry |
+| **Standalone** | `skcapstone` absent | Native structured logging; systemd `skvoice.service` unit manages lifecycle |
+| **Forced standalone** | `SK_STANDALONE=1` | Native mode even when `skcapstone` is installed |
+
+**Enable integrated mode:**
+```bash
+pip install "skvoice[skcapstone]"
+```
+
+**`~/.skcapstone/` filesystem contract (written when integrated):**
+- `config/jobs.d/skvoice_health.yaml` — health-check job registered with fleet scheduler
+- `registry/skvoice.json` — service discovery entry
+
+**`SK_STANDALONE=1`** forces native mode end-to-end (useful for CI and isolated deployments).
+
+---
+
 ## 💙 staycuriousANDkeepsmilin
 
 Built with love by [smilinTux](https://github.com/smilinTux) — the sovereign AI collective.

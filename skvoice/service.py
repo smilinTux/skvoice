@@ -14,6 +14,7 @@ from skvoice.agent_profile import load_agent_profile
 from skvoice.audio import pcm_to_wav, transcribe, synthesize
 from skvoice.config import Config
 from skvoice.emotion import analyze_audio, emotion_context_string
+from skvoice.integration import alert as _alert, ensure_schedule, register_self
 from skvoice.llm import get_response
 
 logging.basicConfig(
@@ -85,6 +86,9 @@ async def startup():
         profile["name"],
         profile["voice_name"],
     )
+    # skcapstone integration — default-on-by-presence
+    register_self()
+    ensure_schedule()
 
 
 @app.get("/health")
@@ -249,6 +253,7 @@ async def voice_ws(ws: WebSocket, agent_name: str = "lumina"):
                     )
                 except Exception as e:
                     log.error("Processing error: %s", e, exc_info=True)
+                    _alert("speech_processing_failed", {"message": str(e), "agent": agent_name}, level="error")
                     await ws.send_json(
                         {"type": "error", "message": f"Processing failed: {e}"}
                     )
@@ -266,6 +271,7 @@ async def voice_ws(ws: WebSocket, agent_name: str = "lumina"):
                         )
                     except Exception as e:
                         log.error("Text processing error: %s", e, exc_info=True)
+                        _alert("text_processing_failed", {"message": str(e), "agent": agent_name}, level="error")
                         await ws.send_json(
                             {"type": "error", "message": f"Processing failed: {e}"}
                         )
