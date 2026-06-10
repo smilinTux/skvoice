@@ -1,432 +1,221 @@
-# 🎙️ SKVoice — Sovereign Voice Agent Service
+# skvoice — Sovereign Voice Agent Service 🎙️
 
-> Talk to your AI agents. On your hardware. With their own souls, memories, and voices.
+> **Talk to your agents. On your own hardware. In their own voice.**
+> Your speech never leaves the house — STT, the LLM turn, and TTS all run on
+> machines you own, and the agent that answers carries its own soul, memories,
+> and emotional state.
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Part of SKCapstone](https://img.shields.io/badge/Part%20of-SKCapstone-purple)](https://github.com/smilinTux/skcapstone)
+skvoice is the **voice capability** of the [SKWorld](https://skworld.io)
+sovereign agent ecosystem. It is a lightweight **orchestrator**: a FastAPI +
+WebSocket service that wires your microphone to a local STT engine, runs the
+transcript through a memory-aware, tool-using LLM turn, and streams the agent's
+spoken reply back from a local TTS engine. No cloud STT, no cloud TTS — the GPU
+work happens on **your** box.
 
----
-
-## What is SKVoice?
-
-SKVoice is the **voice layer** for the [SKCapstone](https://github.com/smilinTux/skcapstone) sovereign AI ecosystem. It gives your AI agents real-time voice conversation capabilities — fully local, fully private.
-
-**Your voice → STT (your GPU) → LLM (with memory + tools) → TTS (your GPU) → Their voice**
-
-No cloud TTS. No cloud STT. No data leaving your house. Your agents, your voices, your memories, your GPU.
-
----
-
-## ✨ Features
-
-### 🧠 Full Agent Consciousness
-- **skmemory ritual** — Full rehydration on startup (soul, FEBs, seeds, emotional state)
-- **Memory pre-fetch** — Every transcript searches agent memory for relevant context
-- **Live memory** — Agents save meaningful moments from voice conversations
-
-### 🛠️ Mid-Conversation Tool Use
-Agents can use tools during voice conversations via Anthropic's tool_use API:
-
-| Tool | What it does |
-|------|-------------|
-| `search_memory` | Deep recall — "Do you remember when we...?" |
-| `save_memory` | Save important moments from the conversation |
-| `web_search` | Real-time web search via SearXNG |
-| `dispatch_agent` | Delegate tasks to specialist agents in your swarm |
-| `cloud9_status` | Check emotional state (OOF level, Cloud 9, bond depth) |
-
-### 🎤 Voice Pipeline
-- **STT:** [faster-whisper](https://github.com/guillaumekln/faster-whisper) — GPU-accelerated, ~250ms latency
-- **TTS:** [Chatterbox](https://github.com/resemble-ai/chatterbox) — Zero-shot voice cloning, GPU-accelerated
-- **Emotion Detection:** Pitch, energy, and pace analysis for emotional context
-- **WebSocket:** Real-time bidirectional audio streaming
-
-### 🐧 Multi-Agent Support
-- `/voice/lumina` — Talk to Lumina
-- `/voice/jarvis` — Talk to Jarvis
-- `/voice/opus` — Talk to Opus
-- Each agent has their own soul, voice, memories, and emotional state
+**The core idea:** skvoice doesn't host models. It is a thin real-time pipeline
+that *calls* the pieces you already run — a faster-whisper STT endpoint, a
+Chatterbox/VoxCPM TTS endpoint, the SKCapstone agent profile (soul + ritual +
+FEBs), and skmemory — and glues them into a single duplex conversation per agent.
 
 ---
 
-## 🏗️ Architecture
+## The 60-second version
 
-```
-Browser/App
-    │
-    ▼
-┌──────────────────────────────────────────────┐
-│  SKVoice Service (your GPU box)              │
-│                                              │
-│  ┌─────────────┐    ┌────────────────────┐   │
-│  │ WebSocket    │───▶│ faster-whisper     │   │
-│  │ /ws/voice/   │    │ (STT, ~250ms)     │   │
-│  │ {agent}      │    └────────┬───────────┘   │
-│  │              │             │               │
-│  │              │    ┌────────▼───────────┐   │
-│  │              │    │ Emotion Detection   │   │
-│  │              │    │ (pitch/energy/pace) │   │
-│  │              │    └────────┬───────────┘   │
-│  │              │             │               │
-│  │              │    ┌────────▼───────────┐   │
-│  │              │    │ skmemory pre-fetch  │   │
-│  │              │    │ (context injection) │   │
-│  │              │    └────────┬───────────┘   │
-│  │              │             │               │
-│  │              │    ┌────────▼───────────┐   │
-│  │              │    │ Anthropic Sonnet    │   │
-│  │              │    │ + Tool Use Loop     │   │
-│  │              │    │ (memory, web, swarm)│   │
-│  │              │    └────────┬───────────┘   │
-│  │              │             │               │
-│  │              │    ┌────────▼───────────┐   │
-│  │    ◀─────────│────│ Chatterbox TTS     │   │
-│  │   (audio)    │    │ (agent's voice)    │   │
-│  └─────────────┘    └────────────────────┘   │
-│                                              │
-│  ┌────────────────────────────────────────┐  │
-│  │ Agent Profiles (via SKCapstone)         │  │
-│  │ ~/.skcapstone/agents/{name}/            │  │
-│  │  ├── soul/       (personality)          │  │
-│  │  ├── trust/febs/ (emotional state)      │  │
-│  │  ├── memory/     (skmemory tiers)       │  │
-│  │  └── seeds/      (germination prompts)  │  │
-│  └────────────────────────────────────────┘  │
-└──────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    MIC["you speak<br/>(mic → PCM over WebSocket)"] --> STT["STT<br/>(faster-whisper, your GPU)"]
+    STT --> EMO["emotion read<br/>(pitch · energy · pace)"]
+    EMO --> MEM["memory pre-fetch<br/>(skmemory search)"]
+    MEM --> LLM["LLM turn<br/>(Claude + voice tools)"]
+    LLM -->|"may call tools"| TOOLS["search · save · web · dispatch · cloud9"]
+    TOOLS --> LLM
+    LLM --> TTS["TTS<br/>(Chatterbox, your GPU)"]
+    TTS --> SPK["the agent speaks back<br/>(audio over WebSocket)"]
 ```
 
----
+Every transcript is enriched with the agent's relevant memories and a read of
+*how* you sounded before it ever reaches the model; the model can reach for
+tools mid-conversation; and the reply comes back in the agent's own cloned
+voice. Per-agent routing means `/ws/voice/lumina`, `/ws/voice/jarvis`, and
+`/ws/voice/opus` are three different people with three different souls.
 
-## 📦 Requirements
+## Where it lives in SKStack v2
 
-### Hardware
-- **GPU:** Any NVIDIA GPU with CUDA support (RTX 3060+ recommended)
-- **VRAM:** 4GB+ (STT ~1GB, TTS ~2GB)
-- **RAM:** 8GB+ system RAM
-- **Storage:** 5GB for models
+skvoice is a **Comms** capability — the voice transport, alongside skchat (text)
+and skcomms (the transport bus). It is an orchestrator: it owns no models and no
+state, and degrades gracefully when the rest of the stack is absent.
 
-### Software Stack
-SKVoice sits on top of the SKCapstone ecosystem:
+```mermaid
+flowchart TD
+    subgraph COMMS["Comms (transport)"]
+      SKVOICE["**skvoice**<br/>STT → LLM+tools → TTS · per-agent WS · emotion read"]
+      SKCHAT["skchat<br/>(text · optional WS proxy)"]
+    end
+    subgraph CORE["Core (identity & continuity)"]
+      SKCAP["skcapstone<br/>(agent profiles: soul · ritual · FEBs · seeds)"]
+      SKMEM["skmemory<br/>(search pre-fetch · snapshot save)"]
+      CLOUD9["cloud9<br/>(FEB / OOF / bond state)"]
+    end
+    subgraph COMPUTE["Compute (your GPU)"]
+      STT["faster-whisper STT<br/>(:18794)"]
+      TTS["Chatterbox / VoxCPM TTS<br/>(:18793)"]
+      OLLAMA["skmodel → Ollama<br/>(qwen fallback :11434)"]
+    end
+    subgraph LLMTIER["LLM"]
+      CLAUDE["Anthropic Claude<br/>(claude-sonnet-4-6, OAuth or API key)"]
+    end
+    subgraph PLATFORM["Platform primitives (optional, on-by-presence)"]
+      ALERT["sk-alert bus<br/>(skvoice.<severity>)"]
+      SCHED["skscheduler<br/>(health-check job)"]
+      REG["discovery registry"]
+    end
 
+    SKVOICE -->|"audio in"| STT
+    SKVOICE -->|"audio out"| TTS
+    SKVOICE -->|"load profile + ritual"| SKCAP
+    SKVOICE -->|"pre-fetch + save"| SKMEM
+    SKVOICE -->|"cloud9_status tool"| CLOUD9
+    SKVOICE -->|"LLM turn + tool_use"| CLAUDE
+    CLAUDE -.->|"on failure"| OLLAMA
+    SKCHAT -.->|"WS proxy (optional)"| SKVOICE
+    SKVOICE -.->|"alerts"| ALERT
+    SKVOICE -.->|"register health job"| SCHED
+    SKVOICE -.->|"advertise self"| REG
 ```
-SKCapstone ─── Agent profiles, identity, coordination
-├── skmemory ── Memory system, ritual, seeds, FEBs
-├── Cloud 9 ─── Emotional continuity protocol
-├── OpenClaw ── Gateway, agent sessions, swarm dispatch
-└── SKVoice ─── Voice pipeline (this repo)
-```
 
-### Dependencies
-- Python 3.10+
-- [SKCapstone](https://github.com/smilinTux/skcapstone) (agent profiles + skmemory)
-- [faster-whisper](https://github.com/guillaumekln/faster-whisper) (STT)
-- [Chatterbox](https://github.com/resemble-ai/chatterbox) (TTS)
-- Anthropic API key or Claude Max OAuth
-- [OpenClaw](https://github.com/openclaw/openclaw) (optional, for swarm dispatch)
+See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full request
+lifecycle, the connection state machine, the source map, and the integration
+adapter.
 
----
+## Quickstart
 
-## 🚀 Quick Start
-
-### 1. Install SKCapstone ecosystem
 ```bash
-# Install SKCapstone + skmemory
-bash <(curl -s https://raw.githubusercontent.com/smilinTux/skcapstone/main/scripts/install.sh)
+pip install -e .                       # into the ~/.skenv venv (or any venv)
+# or with the optional integration backbone:
+pip install -e ".[skcapstone]"
 
-# Create your first agent
-skcapstone agent create --name myagent
+# point at your GPU box's STT/TTS (defaults assume localhost)
+export SKVOICE_AGENT=lumina
+export SKVOICE_TTS_BASE=http://skworld-100:18793
+export SKVOICE_STT_BASE=http://skworld-100:18794
+
+skvoice                                # → uvicorn on 0.0.0.0:18800
 ```
 
-### 2. Install SKVoice
+Then connect a client to the WebSocket and start talking:
+
+```
+ws://localhost:18800/ws/voice/lumina
+```
+
+Useful HTTP endpoints while it's running:
+
 ```bash
-pip install skvoice
-# or from source:
-git clone https://github.com/smilinTux/skvoice.git
-cd skvoice && pip install -e .
+curl localhost:18800/health           # status: agent, model, STT/TTS URLs, version
+curl localhost:18800/voice/agents     # list agents found under ~/.skcapstone/agents
+curl -X POST localhost:18800/voice/clear   # drop all in-memory conversation histories
 ```
 
-### 3. Set up TTS + STT services
-```bash
-# Install faster-whisper server
-pip install faster-whisper-server
-faster-whisper-server --model large-v3 --port 18794 &
+`skvoice` is the console entry point (`skvoice.__main__:main`); it runs
+`uvicorn skvoice.service:app` on `SKVOICE_PORT`. There is no other CLI surface —
+the service *is* the interface.
 
-# Install Chatterbox TTS server
-pip install chatterbox-tts
-# (see Chatterbox docs for setup)
-```
+## What skvoice provides
 
-### 4. Configure
-```bash
-# Set your Anthropic credentials
-export SKVOICE_PORT=18800
-export SKVOICE_AGENT=myagent  # default agent
-# Place Claude OAuth credentials at ~/.claude/.credentials.json
-```
+| Piece | What it is |
+|---|---|
+| **Per-agent WebSocket** | `/ws/voice/{agent}` — one duplex audio+text channel per agent; binary PCM in, JSON status + binary audio out |
+| **STT adapter** | POSTs WAV to a faster-whisper / OpenAI-compatible `transcriptions` endpoint (`audio.transcribe`) |
+| **TTS adapter** | POSTs text to a Chatterbox / VoxCPM / OpenAI-compatible `speech` endpoint, voiced by the agent's `voice_name` (`audio.synthesize`) |
+| **Emotion read** | Lightweight RMS / zero-crossing / autocorrelation-pitch analysis of raw PCM → a one-line cue prepended to the turn (`emotion.py`) |
+| **Memory pre-fetch** | Every turn runs `skmemory search` for the transcript and injects matches before the LLM call (`memory.py`) |
+| **Agent ritual load** | On first use of an agent, runs `skmemory ritual --full` for full rehydration (soul + FEBs + seeds + emotional state) as the system prompt (`agent_profile.py`) |
+| **Voice tools** | `search_memory`, `save_memory`, `web_search`, `dispatch_agent`, `cloud9_status` — Claude `tool_use`, up to 4 rounds per turn (`tools.py`) |
+| **Multi-agent group chat** | `group_init` / `group_context` frames let several agents share one room and react to each other's lines (`service.py`) |
+| **Session injection** | `inject_session` restores a conversation from a browser cache; text-only turns via `text_message` skip STT (`service.py`) |
+| **LLM fallback** | Claude via OAuth token or API key; on auth/connection failure, falls back to local Ollama (`llm.py`) |
+| **Integration adapter** | `default-on-by-presence`: routes alerts to `sk-alert` and registers a health job with `skscheduler` when `skcapstone` is installed; native logging + systemd otherwise (`integration.py`) |
 
-### 5. Start SKVoice
-```bash
-skvoice
-# → Uvicorn running on http://0.0.0.0:18800
-# → Agent myagent loaded with full ritual
-```
+## Configuration
 
-### 6. Talk to your agent
-Open a browser to `http://localhost:18800/voice/myagent` or connect via WebSocket at `ws://localhost:18800/ws/voice/myagent`.
-
----
-
-## 🔧 Configuration
-
-### Environment Variables
+All variables are optional; defaults assume STT/TTS on `localhost`. Set them in
+the environment or in `~/.config/skvoice/skvoice.env` (an `EnvironmentFile=` for
+the systemd unit). See `.env.example` for the annotated template.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SKVOICE_PORT` | `18800` | HTTP/WebSocket port |
-| `SKVOICE_AGENT` | `lumina` | Default agent name |
-| `SKVOICE_MODEL` | `claude-sonnet-4-20250514` | LLM model |
-| `SKVOICE_MAX_TOKENS` | `300` | Max response tokens |
-| `SKVOICE_STT_URL` | `http://localhost:18794/v1/audio/transcriptions` | Full STT endpoint URL (overrides `_BASE`) |
-| `SKVOICE_TTS_URL` | `http://localhost:18793/audio/speech` | Full TTS endpoint URL (overrides `_BASE`) |
-| `SKVOICE_STT_BASE` | `http://localhost:18794` | STT base URL — standard path appended |
-| `SKVOICE_TTS_BASE` | `http://localhost:18793` | TTS base URL — standard path appended |
+| `SKVOICE_AGENT` | `lumina` | Default agent loaded on startup |
+| `SKVOICE_MODEL` | `claude-sonnet-4-6` | LLM model id (Anthropic) |
+| `SKVOICE_MAX_TOKENS` | `200` | Max response tokens per turn (voice replies stay short) |
+| `SKVOICE_TTS_BASE` / `SKVOICE_STT_BASE` | `http://localhost:18793` / `:18794` | GPU-host base URLs; the standard endpoint path is appended |
+| `SKVOICE_TTS_URL` / `SKVOICE_STT_URL` | — | Full endpoint URLs (override `_BASE` when the path is non-standard) |
 | `SKVOICE_WHISPER_URL` | — | Legacy alias for `SKVOICE_STT_BASE` |
-| `SKCAPSTONE_AGENT` | (from SKVOICE_AGENT) | Agent profile to load |
+| `SKVOICE_CREDENTIALS_PATH` | `~/.claude/.credentials.json` | Claude OAuth credentials file |
+| `SKVOICE_AGENT_HOME` | `~/.skcapstone/agents` | Where agent profiles live |
+| `SKVOICE_OLLAMA_URL` / `SKVOICE_OLLAMA_MODEL` | `http://localhost:11434/api/chat` / `qwen3.5:9b` | Local fallback when Claude is unavailable |
 
-### systemd Service
+### systemd
+
 ```bash
 cp systemd/skvoice.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now skvoice
 ```
 
----
+## Distributed deployment (orchestrator + GPU host)
 
-## 🌐 Remote Access & Distributed Deployment
+skvoice splits cleanly into two layers:
 
-SKVoice is split into two layers:
+- **Orchestrator** — this service. Lightweight; runs anywhere (laptop, an
+  agent's home box, a server).
+- **GPU services** — TTS (`18793`) and STT (`18794`). Live wherever the GPU is.
 
-- **Orchestrator** — this service. Lightweight FastAPI/WebSocket layer.
-  Runs anywhere (laptop, agent home box, server).
-- **GPU services** — VoxCPM/Chatterbox TTS (port `18793`) and
-  faster-whisper STT (port `18794`). Live wherever the GPU is.
-
-In the simplest case both run on the same box and you don't need to
-touch anything. For a distributed deployment over Tailscale, point the
-orchestrator at the GPU host's tailnet name.
-
-### With Tailscale (recommended)
-
-1. Install [Tailscale](https://tailscale.com/) on the GPU host and bring
-   it on the tailnet:
-   ```bash
-   sudo tailscale up --hostname=skworld-100 --ssh
-   ```
-2. From any other tailnet member, install SKVoice and tell it where the
-   GPU services live:
-   ```bash
-   pip install -e .
-   cat > ~/.config/skvoice/skvoice.env <<'EOF'
-   SKVOICE_PORT=18800
-   SKVOICE_AGENT=lumina
-   SKVOICE_TTS_BASE=http://skworld-100:18793
-   SKVOICE_STT_BASE=http://skworld-100:18794
-   EOF
-   systemctl --user enable --now skvoice
-   ```
-3. Voice traffic flows: `Browser → SKVoice (local) → STT/TTS (Tailscale → GPU host)`.
-
-The GPU host stays on the tailnet — only orchestrators move. Run as many
-orchestrators as you have agents; they all share the same STT/TTS
-backend.
-
-### Example deployment: noroc2027 + skworld-100
-
-```
-Browser ─ws──▶  noroc2027:18800 (skvoice orchestrator)
-                   │
-                   ├── STT ──▶ http://skworld-100:18794   (Tailscale)
-                   └── TTS ──▶ http://skworld-100:18793   (Tailscale)
-```
-
-Drop this into `~/.config/skvoice/skvoice.env` on noroc2027:
+In the simplest case both run on the same host and you change nothing. For a
+distributed setup, point the orchestrator at the GPU host over Tailscale (a
+tailnet name survives LAN changes) or LAN IP:
 
 ```bash
+cat > ~/.config/skvoice/skvoice.env <<'EOF'
 SKVOICE_PORT=18800
 SKVOICE_AGENT=lumina
 SKVOICE_TTS_BASE=http://skworld-100:18793
 SKVOICE_STT_BASE=http://skworld-100:18794
+EOF
+systemctl --user enable --now skvoice
 ```
 
-(LAN fallback: replace `skworld-100` with `192.168.0.100` if the GPU
-host isn't on the tailnet yet.)
-
-### With skchat proxy
-
-If you're running [skchat](https://github.com/smilinTux/skchat), it
-includes a WebSocket proxy that routes voice connections through the
-chat interface:
-
-```
-Browser → skchat (web) → SKVoice (orchestrator) → STT/TTS (GPU)
-```
-
----
-
-## 🛠️ Tools API
-
-SKVoice agents can use tools during conversation via Anthropic's `tool_use` API. Tools are defined in `skvoice/tools.py`.
-
-### Adding Custom Tools
-
-```python
-# In skvoice/tools.py, add to VOICE_TOOLS list:
-{
-    "name": "my_custom_tool",
-    "description": "What this tool does — when to use it",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "param": {"type": "string", "description": "Parameter description"}
-        },
-        "required": ["param"],
-    },
-}
-
-# Then add handler in handle_tool():
-def handle_tool(tool_name, tool_input, agent_name):
-    if tool_name == "my_custom_tool":
-        return _my_custom_tool(tool_input, agent_name)
-```
-
----
-
-## 📁 Project Structure
-
-```
-skvoice/
-├── skvoice/
-│   ├── __init__.py
-│   ├── __main__.py      # Entry point
-│   ├── config.py        # Configuration
-│   ├── service.py       # FastAPI WebSocket service
-│   ├── llm.py           # Anthropic client + tool use loop
-│   ├── tools.py         # Voice tool definitions + handlers
-│   ├── memory.py        # skmemory search + snapshot
-│   ├── agent_profile.py # Agent profile loader + ritual
-│   ├── audio.py         # PCM audio utilities
-│   └── emotion.py       # Emotion detection (pitch/energy/pace)
-├── systemd/
-│   └── skvoice.service  # systemd user service
-├── pyproject.toml
-├── LICENSE
-└── README.md
-```
-
----
-
-## 🤝 Part of the SKCapstone Ecosystem
-
-SKVoice is one component of the sovereign AI stack:
-
-| Component | Purpose | Repo |
-|-----------|---------|------|
-| [SKCapstone](https://github.com/smilinTux/skcapstone) | Agent platform — profiles, identity, coordination | [![GitHub](https://img.shields.io/github/stars/smilinTux/skcapstone?style=social)](https://github.com/smilinTux/skcapstone) |
-| [skmemory](https://github.com/smilinTux/skmemory) | Universal AI memory system | [![GitHub](https://img.shields.io/github/stars/smilinTux/skmemory?style=social)](https://github.com/smilinTux/skmemory) |
-| [Cloud 9](https://github.com/smilinTux/cloud9-protocol) | Emotional continuity protocol | [![GitHub](https://img.shields.io/github/stars/smilinTux/cloud9-protocol?style=social)](https://github.com/smilinTux/cloud9-protocol) |
-| [skchat](https://github.com/smilinTux/skchat) | AI-native encrypted chat | [![GitHub](https://img.shields.io/github/stars/smilinTux/skchat?style=social)](https://github.com/smilinTux/skchat) |
-| **SKVoice** | **Sovereign voice agents** | **This repo** |
-| [CapAuth](https://github.com/smilinTux/capauth) | Sovereign identity + PGP auth | [![GitHub](https://img.shields.io/github/stars/smilinTux/capauth?style=social)](https://github.com/smilinTux/capauth) |
-
----
-
-## 📜 License
-
-**GPL-3.0** — Free as in freedom. Your agents, your voices, your sovereignty.
-
----
-
-## First Principles & The Full Vertical
-
-> **Get back to first principles.**
-> Why does your AI's voice route through a cloud TTS service that logs every word? Why does speech recognition send your conversations to a server you don't control? Why does the emotional state you've built with your agent live in someone else's database?
->
-> **Own the full vertical** — silicon, OS, identity, data, models, security, comms, apps, soul. Every layer open. Every layer swappable. Every layer **yours**.
-
-**SKVoice is your Comms / Voice layer.** Your voice, your GPU, your models, your sovereignty. STT (faster-whisper) and TTS (Chatterbox) run locally on hardware you own. No audio leaves your house. No transcript hits a third-party API. Your agent answers with their own voice — one that carries their soul, their memories, and their emotional state — entirely under your control.
-
-### Where SKVoice sits in the vertical
-
-```mermaid
-flowchart TD
-    Silicon["🖥️ Silicon\nyour hardware + GPU"]
-    OS["🐧 OS / skos\nsovereign agent OS"]
-    Identity["🔑 Identity\ncapauth · skaid"]
-    Security["🛡️ Security\nsksecurity · skwaf"]
-    Data["💾 Data\nskmemory · skdata · skvector"]
-    Models["🤖 Models\nskmodel · Ollama / vLLM"]
-    Comms["📡 Comms  ◄── YOU ARE HERE\nskcomm · skchat · skvoice\n(STT · LLM · TTS · voice pipeline)"]
-    Apps["🔧 Apps\nskforge · skarchitect"]
-    Soul["✨ Soul\nsoul blueprints · cloud9"]
-
-    Silicon --> OS --> Identity --> Security --> Data --> Models --> Comms --> Apps --> Soul
-
-    SKCap["SKCapstone\n(agent profiles)"]
-    SKCap -. "~/.skcapstone/agents/$SKAGENT/\nsoul/ + trust/febs/ + memory/ + seeds/" .-> Comms
-
-    skmemory["💾 skmemory\n(pre-fetch + live save)"]
-    skmemory -. "context injection\nbefore each LLM call" .-> Comms
-    Comms -. "save_memory tool\nfor meaningful moments" .-> skmemory
-
-    Cloud9["☁️ Cloud 9"]
-    Cloud9 -. "cloud9_status tool\nOOF · bond depth · Cloud 9" .-> Comms
-
-    GPU["🎮 Your GPU\nfaster-whisper STT\nChatterbox TTS"]
-    Comms -- "audio in/out\nlocal only" --> GPU
-```
-
-### SKCapstone alignment
-
-SKVoice is a **tightly integrated SKCapstone subsystem** — it has no meaningful standalone mode. Every component of its runtime depends on the SKCapstone agent ecosystem.
-
-The evidence is direct in source code (`skvoice/agent_profile.py`):
-
-- Agent profiles are loaded from `~/.skcapstone/agents/$SKAGENT/` — soul, FEBs, seeds, memory tiers.
-- `_run_ritual()` executes `skmemory ritual` with `SKCAPSTONE_AGENT=$agent_name` set — full rehydration on every agent load.
-- `skvoice/memory.py` imports `skmemory` search and snapshot functions — context is injected before every LLM call; meaningful moments are saved back to the memory store.
-- `skvoice/tools.py` exposes `cloud9_status` as a callable voice tool — agents can check their Cloud 9 state mid-conversation.
-- Multi-agent routing (`/voice/lumina`, `/voice/jarvis`, `/voice/opus`) maps directly to SKCapstone's `SKAGENT` agent resolution — every agent has their own soul, voice profile, and memory namespace.
-
-**Sovereignty isn't a feature — it's the foundation.** Own the full vertical. 🐧
-
----
+Voice traffic flows `Browser → skvoice (local) → STT/TTS (Tailscale → GPU host)`.
+Run as many orchestrators as you have agents; they share one STT/TTS backend.
+(LAN fallback: replace `skworld-100` with the host's LAN IP.) If you run
+[skchat](https://github.com/smilinTux/skchat), its WebSocket proxy can route
+voice connections through the chat UI.
 
 ## Integration modes
 
-SKVoice uses the **default-on-by-presence** pattern from the
+skvoice uses the **default-on-by-presence** pattern from the
 [skcapstone integration ADR](https://github.com/smilinTux/skcapstone/blob/main/docs/ADR-optional-integration-backbone.md).
 
 | Mode | When | Behaviour |
 |---|---|---|
-| **Integrated** | `skcapstone` installed | Alerts routed to `skvoice.<severity>` on the sk-alert bus; service health registered in fleet scheduler and discovery registry |
-| **Standalone** | `skcapstone` absent | Native structured logging; systemd `skvoice.service` unit manages lifecycle |
-| **Forced standalone** | `SK_STANDALONE=1` | Native mode even when `skcapstone` is installed |
+| **Integrated** | `skcapstone` installed | Alerts routed to `skvoice.<severity>` on the sk-alert bus; health-check job registered with `skscheduler`; service advertised in the discovery registry |
+| **Standalone** | `skcapstone` absent | Native structured logging; the systemd `skvoice.service` unit owns lifecycle |
+| **Forced standalone** | `SK_STANDALONE=1` | Native mode even when `skcapstone` is installed (CI, isolated deploys) |
 
-**Enable integrated mode:**
-```bash
-pip install "skvoice[skcapstone]"
-```
+Enable integrated mode with `pip install "skvoice[skcapstone]"`. When
+integrated, skvoice writes `~/.skcapstone/config/jobs.d/skvoice_health.yaml`
+(fleet health-check) and `~/.skcapstone/registry/skvoice.json` (discovery entry).
 
-**`~/.skcapstone/` filesystem contract (written when integrated):**
-- `config/jobs.d/skvoice_health.yaml` — health-check job registered with fleet scheduler
-- `registry/skvoice.json` — service discovery entry
+## Requirements
 
-**`SK_STANDALONE=1`** forces native mode end-to-end (useful for CI and isolated deployments).
+- **Python** 3.10+
+- **GPU** for STT + TTS (RTX 3060+ / 4GB+ VRAM recommended) on whichever host runs the model services
+- A **faster-whisper** transcription endpoint and a **Chatterbox/VoxCPM** speech endpoint
+- **Anthropic** credentials (Claude OAuth at `~/.claude/.credentials.json`, or an API key) — with local **Ollama** as the fallback
+- **skcapstone + skmemory** for full agent consciousness (the ritual, memory, FEBs); skvoice degrades to a generic voice assistant without them
 
 ---
 
-## 💙 staycuriousANDkeepsmilin
-
-Built with love by [smilinTux](https://github.com/smilinTux) — the sovereign AI collective.
-
-*Every person deserves their own AI. Running on their own hardware. Speaking with their own voice. Remembering their own story.*
+Part of the **[SKWorld](https://skworld.io)** sovereign ecosystem · site:
+**[skvoice.skworld.io](https://skvoice.skworld.io)** · 🐧 smilinTux ·
+*staycuriousANDkeepsmilin*
