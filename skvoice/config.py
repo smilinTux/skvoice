@@ -70,7 +70,9 @@ class Config:
         _TTS_PATH,
         "http://localhost:18793",
     )
-    MODEL: str = os.getenv("SKVOICE_MODEL", "claude-sonnet-4-6")
+    MODEL: str = os.getenv("SKVOICE_MODEL", "claude-haiku-4-5")
+    # Primary LLM: OpenAI-compatible chat endpoint (local proxy — no cloud rate limits).
+    LLM_URL: str = os.getenv("SKVOICE_LLM_URL", "http://localhost:18783/v1/chat/completions")
     MAX_TOKENS: int = int(os.getenv("SKVOICE_MAX_TOKENS", "200"))
     CREDENTIALS_PATH: Path = Path(
         os.getenv("SKVOICE_CREDENTIALS_PATH", "~/.claude/.credentials.json")
@@ -78,6 +80,8 @@ class Config:
     AGENT_HOME: Path = Path(
         os.getenv("SKVOICE_AGENT_HOME", "~/.skcapstone/agents")
     ).expanduser()
-    # Ollama fallback for when Anthropic API is unavailable (native API, not OpenAI-compat)
-    OLLAMA_URL: str = os.getenv("SKVOICE_OLLAMA_URL", "http://localhost:11434/api/chat")
-    OLLAMA_MODEL: str = os.getenv("SKVOICE_OLLAMA_MODEL", "qwen3.5:9b")
+    # Fallback LLM: OpenAI-compatible endpoint (sovereign qwen3.6 abliterated on .100:8082).
+    FALLBACK_URL: str = os.getenv(
+        "SKVOICE_FALLBACK_URL", "http://192.168.0.100:8082/v1/chat/completions"
+    )
+    FALLBACK_MODEL: str = os.getenv("SKVOICE_FALLBACK_MODEL", "qwen3.6-27b-abliterated")
