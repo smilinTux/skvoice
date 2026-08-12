@@ -14,6 +14,7 @@ from skvoice.agent_profile import load_agent_profile
 from skvoice.audio import pcm_to_wav, transcribe, synthesize
 from skvoice.config import Config
 from skvoice.emotion import analyze_audio, emotion_context_string
+from skvoice.facetime import FaceTimeSocket, placeholder_jpeg
 from skvoice.integration import alert as _alert, ensure_schedule, register_self
 from skvoice.llm import get_response
 
@@ -128,6 +129,39 @@ async def list_agents():
 
 @app.websocket("/ws/voice/{agent_name}")
 async def voice_ws(ws: WebSocket, agent_name: str = "lumina"):
+    """Voice conversation. Protocol documented on :func:`_conversation_loop`."""
+    await ws.accept()
+    await _conversation_loop(ws, agent_name)
+
+
+@app.websocket("/ws/video/{agent_name}")
+async def video_ws(ws: WebSocket, agent_name: str = "lumina"):
+    """Video chat, which speaks the SAME protocol as /ws/voice.
+
+    skchat's video-chat.html sends raw PCM, the text sentinel END_OF_SPEECH and
+    JSON control messages, and expects binary audio plus JSON back: exactly what
+    the voice endpoint already does. It had simply never been routed here, so the
+    client got a 403 and video chat looked broken against a healthy server.
+    Sharing the loop means the two cannot drift apart.
+    """
+    await ws.accept()
+    await _conversation_loop(ws, agent_name)
+
+
+@app.websocket("/ws/facetime/{agent_name}")
+async def facetime_ws(ws: WebSocket, agent_name: str = "lumina"):
+    """FaceTime fallback: the same turn, in the framed binary protocol.
+
+    skchat prefers WebRTC and drops to this when it fails; it was answering 403.
+    Audio is wrapped in the 12-byte header the client parses, and a video frame
+    is pushed on each state change so the canvas is not blank.
+    See :mod:`skvoice.facetime`.
+    """
+    await ws.accept()
+    await _conversation_loop(FaceTimeSocket(ws), agent_name)
+
+
+async def _conversation_loop(ws, agent_name: str = "lumina"):
     """WebSocket endpoint for voice conversation.
 
     Protocol:
@@ -136,7 +170,6 @@ async def voice_ws(ws: WebSocket, agent_name: str = "lumina"):
     - Client sends text "CLEAR_HISTORY" to reset conversation.
     - Server replies with JSON status messages and binary audio frames.
     """
-    await ws.accept()
     conn_id = f"{agent_name}:{id(ws)}"
     log.info("WebSocket connected: %s", conn_id)
 
@@ -290,6 +323,24 @@ async def voice_ws(ws: WebSocket, agent_name: str = "lumina"):
         log.info("WebSocket closed: %s", conn_id)
 
 
+async def _push_video_state(ws, agent_name: str, state: str) -> None:
+    """Send one placeholder video frame on a FaceTime socket, best effort.
+
+    Only FaceTimeSocket exposes send_video, so /ws/voice and /ws/video skip this
+    entirely. A rendering failure must never break the conversation, so it is
+    swallowed: losing a frame is cosmetic, losing the turn is not.
+    """
+    send_video = getattr(ws, "send_video", None)
+    if send_video is None:
+        return
+    try:
+        jpeg = placeholder_jpeg(agent_name, state)
+        if jpeg:
+            await send_video(jpeg)
+    except Exception:  # pragma: no cover - cosmetic path
+        log.debug("video frame push failed", exc_info=True)
+
+
 async def _process_speech(
     ws: WebSocket,
     pcm_data: bytes,
@@ -302,6 +353,7 @@ async def _process_speech(
     """Process a complete speech utterance through the full pipeline."""
     # 1. Processing status
     await ws.send_json({"type": "status", "state": "processing"})
+    await _push_video_state(ws, agent_name, "processing")
 
     # 2. Convert PCM to WAV
     wav_data = pcm_to_wav(pcm_data)
@@ -358,6 +410,7 @@ async def _process_speech(
 
     # 12. Back to listening
     await ws.send_json({"type": "status", "state": "listening"})
+    await _push_video_state(ws, agent_name, "listening")
 
 
 async def _process_text(
@@ -405,3 +458,4 @@ async def _process_text(
 
     # 7. Back to listening
     await ws.send_json({"type": "status", "state": "listening"})
+    await _push_video_state(ws, agent_name, "listening")
