@@ -7,28 +7,57 @@
 # Bumps once per push. Skipped when:
 #   - The push is itself a tag push (avoids loops)
 #   - HEAD is already tagged
+#   - The push is NOT of the release branch (see below)
 #   - Env SKIP_AUTOTAG=1 is set
+#
+# The release-branch check is not theoretical. This hook used to fire on ANY
+# branch push, so pushing an ordinary feature branch cut a release tag at that
+# branch's tip and pushed it. That happened on 2026-08-13: a chore branch push
+# cut v0.2.9 at a commit that was never on main, which then triggered the publish
+# workflow. Only the server-side "refuse to publish a tag that is not on main"
+# check stopped a feature-branch commit being released as 0.2.9.
+#
+# skchat hit the same bug and fixed it the same way; this ports that guard.
 #
 # Install:  scripts/hooks/install.sh
 set -euo pipefail
+
+#: The only branch a release tag may be cut from. Override for a fork whose
+#: mainline is named differently.
+RELEASE_BRANCH="${AUTOTAG_BRANCH:-main}"
 
 if [[ "${SKIP_AUTOTAG:-0}" == "1" ]]; then
   exit 0
 fi
 
-# Read refs being pushed from stdin. If only tags are being pushed, skip.
+# Read refs being pushed from stdin. Only a push of the RELEASE branch may cut a
+# tag; tag pushes (loop guard) and feature-branch pushes are both skipped.
 # Format: <local-ref> <local-sha> <remote-ref> <remote-sha>
-pushing_branch=0
+pushing_release_branch=0
 while read -r local_ref local_sha remote_ref remote_sha; do
   [[ -z "${local_ref:-}" ]] && continue
   case "$local_ref" in
     refs/tags/*) continue ;;
-    refs/heads/*) pushing_branch=1 ;;
+    "refs/heads/${RELEASE_BRANCH}") pushing_release_branch=1 ;;
   esac
 done
 
-if [[ "$pushing_branch" -eq 0 ]]; then
+if [[ "$pushing_release_branch" -eq 0 ]]; then
   exit 0
+fi
+
+# Belt and braces: even on a release-branch push, refuse to tag a commit that is
+# not contained in the remote release branch. Catches a local main that has
+# drifted or been reset onto something unmerged.
+if git rev-parse -q --verify "refs/remotes/origin/${RELEASE_BRANCH}" >/dev/null 2>&1; then
+  if ! git merge-base --is-ancestor HEAD "refs/remotes/origin/${RELEASE_BRANCH}" 2>/dev/null; then
+    # HEAD ahead of origin/<release> is a normal direct push of new commits, so
+    # only refuse when HEAD is on a DIFFERENT line of history entirely.
+    if ! git merge-base --is-ancestor "refs/remotes/origin/${RELEASE_BRANCH}" HEAD 2>/dev/null; then
+      echo "[auto-tag] HEAD is not on ${RELEASE_BRANCH}; refusing to cut a release tag." >&2
+      exit 0
+    fi
+  fi
 fi
 
 # Find the most recent vX.Y.Z tag reachable from HEAD.
