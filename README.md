@@ -26,18 +26,17 @@ flowchart LR
     MIC["you speak<br/>(mic → PCM over WebSocket)"] --> STT["STT<br/>(faster-whisper, your GPU)"]
     STT --> EMO["emotion read<br/>(pitch · energy · pace)"]
     EMO --> MEM["memory pre-fetch<br/>(skmemory search)"]
-    MEM --> LLM["LLM turn<br/>(Claude + voice tools)"]
-    LLM -->|"may call tools"| TOOLS["search · save · web · dispatch · cloud9"]
-    TOOLS --> LLM
+    MEM --> LLM["LLM turn<br/>(OpenAI-compatible endpoint)"]
+    LLM -.->|"on failure or empty"| FB["fallback LLM<br/>(sovereign qwen3.6)"]
     LLM --> TTS["TTS<br/>(Chatterbox, your GPU)"]
     TTS --> SPK["the agent speaks back<br/>(audio over WebSocket)"]
 ```
 
 Every transcript is enriched with the agent's relevant memories and a read of
-*how* you sounded before it ever reaches the model; the model can reach for
-tools mid-conversation; and the reply comes back in the agent's own cloned
-voice. Per-agent routing means `/ws/voice/lumina`, `/ws/voice/jarvis`, and
-`/ws/voice/opus` are three different people with three different souls.
+*how* you sounded before it ever reaches the model, and the reply comes back in
+the agent's own cloned voice. Per-agent routing means `/ws/voice/lumina`,
+`/ws/voice/jarvis`, and `/ws/voice/opus` are three different people with three
+different souls.
 
 ## Where it lives in SKStack v2
 
@@ -59,10 +58,10 @@ flowchart TD
     subgraph COMPUTE["Compute (your GPU)"]
       STT["faster-whisper STT<br/>(:18794)"]
       TTS["Chatterbox / VoxCPM TTS<br/>(:18793)"]
-      OLLAMA["skmodel → Ollama<br/>(qwen fallback :11434)"]
+      FALLBACK["sovereign fallback LLM<br/>(qwen3.6-27b-abliterated)"]
     end
-    subgraph LLMTIER["LLM"]
-      CLAUDE["Anthropic Claude<br/>(claude-sonnet-4-6, OAuth or API key)"]
+    subgraph LLMTIER["LLM (OpenAI-compatible /v1/chat/completions)"]
+      CLAUDE["primary<br/>(SKVOICE_LLM_URL, default claude-haiku-4-5 proxy)"]
     end
     subgraph PLATFORM["Platform primitives (optional, on-by-presence)"]
       ALERT["sk-alert bus<br/>(skvoice.<severity>)"]
@@ -75,17 +74,21 @@ flowchart TD
     SKVOICE -->|"load profile + ritual"| SKCAP
     SKVOICE -->|"pre-fetch + save"| SKMEM
     SKVOICE -->|"cloud9_status tool"| CLOUD9
-    SKVOICE -->|"LLM turn + tool_use"| CLAUDE
-    CLAUDE -.->|"on failure"| OLLAMA
+    SKVOICE -->|"LLM turn"| CLAUDE
+    CLAUDE -.->|"on failure or empty"| FALLBACK
     SKCHAT -.->|"WS proxy (optional)"| SKVOICE
     SKVOICE -.->|"alerts"| ALERT
     SKVOICE -.->|"register health job"| SCHED
     SKVOICE -.->|"advertise self"| REG
 ```
 
-See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full request
-lifecycle, the connection state machine, the source map, and the integration
-adapter.
+See **[SOP.md](SOP.md)** for the operating procedures: build, test, deploy and
+rollback, the exposure posture, the full configuration and API reference, and a
+symptom-to-check troubleshooting table.
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** covers the request lifecycle,
+the connection state machine, the source map, and the integration adapter (its
+"LLM turn & the tool loop" and "Voice tools" sections describe the design
+retired in v0.2.6; SOP.md section 2 has the current one).
 
 ## Quickstart
 
@@ -102,11 +105,21 @@ export SKVOICE_STT_BASE=http://skworld-100:18794
 skvoice                                # → uvicorn on 0.0.0.0:18800
 ```
 
+⚠️ **The listen address is `0.0.0.0` and it is hardcoded** in
+`skvoice/__main__.py` with no environment override; only the port is
+configurable. **No route is authenticated.** Anyone who can reach the port can
+converse as any agent. Read [SOP.md § Front-end / Exposure](SOP.md) before
+putting this on a network you do not trust.
+
 Then connect a client to the WebSocket and start talking:
 
 ```
 ws://localhost:18800/ws/voice/lumina
 ```
+
+`/ws/video/{agent}` speaks the identical protocol, and
+`/ws/facetime/{agent}` runs the identical turn in the 12-byte framed binary
+protocol skchat's FaceTime fallback expects.
 
 Useful HTTP endpoints while it's running:
 
@@ -130,10 +143,10 @@ the service *is* the interface.
 | **Emotion read** | Lightweight RMS / zero-crossing / autocorrelation-pitch analysis of raw PCM → a one-line cue prepended to the turn (`emotion.py`) |
 | **Memory pre-fetch** | Every turn runs `skmemory search` for the transcript and injects matches before the LLM call (`memory.py`) |
 | **Agent ritual load** | On first use of an agent, runs `skmemory ritual --full` for full rehydration (soul + FEBs + seeds + emotional state) as the system prompt (`agent_profile.py`) |
-| **Voice tools** | `search_memory`, `save_memory`, `web_search`, `dispatch_agent`, `cloud9_status` — Claude `tool_use`, up to 4 rounds per turn (`tools.py`) |
+| **Multi-transport** | `/ws/voice`, `/ws/video` (identical protocol, shared loop), `/ws/facetime` (identical turn, 12-byte framed binary for skchat's WebRTC fallback) |
 | **Multi-agent group chat** | `group_init` / `group_context` frames let several agents share one room and react to each other's lines (`service.py`) |
 | **Session injection** | `inject_session` restores a conversation from a browser cache; text-only turns via `text_message` skip STT (`service.py`) |
-| **LLM fallback** | Claude via OAuth token or API key; on auth/connection failure, falls back to local Ollama (`llm.py`) |
+| **LLM leg + fallback** | Two OpenAI-compatible `/v1/chat/completions` endpoints: a primary, and a sovereign fallback used when the primary errors or returns empty. Markdown and emoji are stripped so the text speaks cleanly (`llm.py`) |
 | **Integration adapter** | `default-on-by-presence`: routes alerts to `sk-alert` and registers a health job with `skscheduler` when `skcapstone` is installed; native logging + systemd otherwise (`integration.py`) |
 
 ## Configuration
@@ -144,16 +157,21 @@ the systemd unit). See `.env.example` for the annotated template.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SKVOICE_PORT` | `18800` | HTTP/WebSocket port |
+| `SKVOICE_PORT` | `18800` | HTTP/WebSocket port. The bind **host** is not configurable, see the warning above |
 | `SKVOICE_AGENT` | `lumina` | Default agent loaded on startup |
-| `SKVOICE_MODEL` | `claude-sonnet-4-6` | LLM model id (Anthropic) |
+| `SKVOICE_MODEL` | `claude-haiku-4-5` | Model id sent to the primary LLM endpoint |
+| `SKVOICE_LLM_URL` | `http://localhost:18783/v1/chat/completions` | Primary LLM, OpenAI-compatible |
+| `SKVOICE_FALLBACK_URL` | `http://192.168.0.100:8082/v1/chat/completions` | Fallback LLM, used when the primary errors or returns empty |
+| `SKVOICE_FALLBACK_MODEL` | `qwen3.6-27b-abliterated` | Model id for the fallback endpoint |
 | `SKVOICE_MAX_TOKENS` | `200` | Max response tokens per turn (voice replies stay short) |
 | `SKVOICE_TTS_BASE` / `SKVOICE_STT_BASE` | `http://localhost:18793` / `:18794` | GPU-host base URLs; the standard endpoint path is appended |
-| `SKVOICE_TTS_URL` / `SKVOICE_STT_URL` | — | Full endpoint URLs (override `_BASE` when the path is non-standard) |
-| `SKVOICE_WHISPER_URL` | — | Legacy alias for `SKVOICE_STT_BASE` |
-| `SKVOICE_CREDENTIALS_PATH` | `~/.claude/.credentials.json` | Claude OAuth credentials file |
+| `SKVOICE_TTS_URL` / `SKVOICE_STT_URL` | (unset) | Full endpoint URLs (override `_BASE` when the path is non-standard) |
+| `SKVOICE_WHISPER_URL` | (unset) | Legacy alias for `SKVOICE_STT_BASE` |
 | `SKVOICE_AGENT_HOME` | `~/.skcapstone/agents` | Where agent profiles live |
-| `SKVOICE_OLLAMA_URL` / `SKVOICE_OLLAMA_MODEL` | `http://localhost:11434/api/chat` / `qwen3.5:9b` | Local fallback when Claude is unavailable |
+| `SKVOICE_CREDENTIALS_PATH` | `~/.claude/.credentials.json` | **Unused.** Left over from the Anthropic OAuth path retired in v0.2.6 |
+| `SK_STANDALONE` | (unset) | Any value forces standalone mode even when skcapstone is installed |
+
+Config is read **at import time**, so a change needs a restart, not a reload.
 
 ### systemd
 
@@ -211,7 +229,7 @@ integrated, skvoice writes `~/.skcapstone/config/jobs.d/skvoice_health.yaml`
 - **Python** 3.10+
 - **GPU** for STT + TTS (RTX 3060+ / 4GB+ VRAM recommended) on whichever host runs the model services
 - A **faster-whisper** transcription endpoint and a **Chatterbox/VoxCPM** speech endpoint
-- **Anthropic** credentials (Claude OAuth at `~/.claude/.credentials.json`, or an API key) — with local **Ollama** as the fallback
+- Two **OpenAI-compatible `/v1/chat/completions`** endpoints (a primary and a fallback). Any server speaking that API works; no vendor SDK and no cloud credential is required
 - **skcapstone + skmemory** for full agent consciousness (the ritual, memory, FEBs); skvoice degrades to a generic voice assistant without them
 
 ---

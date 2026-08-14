@@ -1,5 +1,18 @@
 # skvoice Architecture
 
+> ⚠️ **Accuracy note, 2026-08-14.** This document was written at v0.2.5. One
+> release later, v0.2.6 retired the Anthropic SDK and the Claude OAuth path in
+> favour of two plain OpenAI-compatible `/v1/chat/completions` endpoints, and
+> this file was never updated. Two sections below therefore describe a design
+> that **no longer runs**: **"LLM turn & the tool loop"** and **"Voice tools
+> (`tools.py`)"**. In particular, nothing imports `skvoice/tools.py` today, so
+> the tool loop is not wired in at all. Everything else here (the pipeline, the
+> WebSocket protocol and state machine, the agent/ritual model, the source map,
+> networking, and the integration adapter) was re-verified against the code and
+> is accurate. For the current LLM leg and the exposure posture, read
+> [`../SOP.md`](../SOP.md). Rewriting the two stale sections is tracked as a
+> follow-up in SOP.md section 9.
+
 skvoice is an **orchestrator**, not a model host. It owns no STT, TTS, or LLM
 weights, and keeps no durable state — conversation histories live in memory and
 are dropped on disconnect. Everything it does is glue: take audio in over a
@@ -186,6 +199,13 @@ adapter sends as the `voice` field, so each agent speaks in its own cloned voice
 
 ## LLM turn & the tool loop
 
+> ⚠️ **STALE as of v0.2.6.** This section and the "Voice tools" section that
+> follows describe the retired Anthropic SDK design. The current `llm.py` has no
+> tool loop, no OAuth handling, and no Ollama call: it POSTs to
+> `Config.LLM_URL` and, on failure or empty text, to `Config.FALLBACK_URL`, both
+> OpenAI-compatible. `skvoice/tools.py` is not imported by anything. Kept here
+> only as a record of the previous design. See [`../SOP.md`](../SOP.md) § 2.
+
 `llm.get_response` builds the message list, pre-fetches memory, and runs a
 bounded agentic loop against Claude (`llm.py`):
 
@@ -220,6 +240,10 @@ flowchart TD
 
 ### Voice tools (`tools.py`)
 
+> ⚠️ **NOT WIRED IN.** Nothing imports `skvoice/tools.py`. None of the tools
+> below are reachable by the model today. Memory is still consulted, but only
+> through the unconditional pre-fetch in `llm.get_response`.
+
 | Tool | What it does | How |
 |---|---|---|
 | `search_memory` | Deep recall on demand | `skmemory search <q> --limit 5` |
@@ -240,8 +264,8 @@ short timeout, so each tool operates in the calling agent's namespace.
 | `skvoice/config.py` | Env-driven config + STT/TTS URL resolution (full-URL > base-URL > legacy alias > default) |
 | `skvoice/agent_profile.py` | Profile loader + `skmemory ritual --full` rehydration + `VOICE_RULES` |
 | `skvoice/memory.py` | `skmemory search` pre-fetch + `skmemory snapshot` save |
-| `skvoice/llm.py` | Anthropic client (OAuth/API key), memory-aware turn, ≤4-round tool loop, auth-retry, Ollama fallback, formatting strip |
-| `skvoice/tools.py` | `VOICE_TOOLS` definitions + `handle_tool` dispatch + implementations |
+| `skvoice/llm.py` | Memory-aware turn against an OpenAI-compatible primary, then a sovereign fallback on failure or empty text; formatting strip |
+| `skvoice/tools.py` | `VOICE_TOOLS` definitions + `handle_tool` dispatch. **Not imported by anything since v0.2.6** |
 | `skvoice/audio.py` | PCM→WAV, STT POST (`transcribe`), TTS POST (`synthesize`) |
 | `skvoice/emotion.py` | RMS / ZCR / autocorrelation-pitch analysis → emotion tags + cue string |
 | `skvoice/integration.py` | Optional skcapstone adapter — sk-alert, skscheduler health job, discovery registry |

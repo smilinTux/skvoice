@@ -1,0 +1,23 @@
+name: docs-check
+
+# Shared gate from sk-standards (DOCS_FRESHNESS_STANDARD).
+#
+#   tier 1  the 7 files SK_REPO_DOC_STANDARD requires exist
+#   tier 2  a PR touching pyproject.toml also touches CHANGELOG.md
+#   tier 3  every check in SOP.md's docs-evidence block still exits 0
+#
+# Pinned to "1,2" so the gate is green on day one. SOP.md already carries a
+# full docs-evidence block; moving this to "1,2,3" is a follow-up once this has
+# run clean, and is tracked in SOP.md section 9. A gate that lands red gets
+# ignored, and an ignored gate is worse than no gate.
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    uses: smilinTux/sk-standards/.github/workflows/docs-check.yml@main
+    with:
+      tiers: "1,2"
