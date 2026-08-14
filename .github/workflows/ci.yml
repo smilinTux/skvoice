@@ -1,0 +1,46 @@
+name: ci
+
+# The test gate. Before this file existed, the ONLY place pytest was invoked was
+# the `test` job in publish.yml, and that job could not fail for three separate
+# reasons:
+#
+#   1. publish.yml triggers on `push: tags: ["v*"]` and workflow_dispatch only,
+#      so it never sees an ordinary push or a pull request.
+#   2. Its pytest step carries `continue-on-error: true`.
+#   3. It installs with `pip install -e ".[dev]" || pip install -e .`, and no
+#      `dev` extra existed, so the fallback ran and installed no pytest. The
+#      step died on "No module named pytest" straight into the swallow.
+#
+# So the suite in tests/ had never actually run in CI. This job runs it on every
+# push and pull request, with no continue-on-error. If it is red, the PR is red.
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # setuptools-scm reads the version from the git tag. A shallow
+          # checkout has none, and the install resolves to 0.0.0+unknown.
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      # Expected: 2 passed, 4 skipped. The skips are the integrated-mode cases
+      # in tests/test_integration_adapter.py, which need the optional
+      # skcapstone package. Runners have no ~/.skcapstone, so the adapter's
+      # leak-check fixture stays quiet here; see CONTRIBUTING.md for why it
+      # false-positives on a host that is actually running skvoice.
+      - run: python -m pytest tests/ -q

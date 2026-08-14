@@ -19,6 +19,11 @@ dependencies = [
 
 [project.optional-dependencies]
 skcapstone = ["skcapstone>=0.6.8"]
+# publish.yml has always run `pip install -e ".[dev]" || pip install -e .`, but
+# this extra did not exist: the first half always failed, the fallback installed
+# no pytest, and the test step died on "No module named pytest" into a
+# continue-on-error that swallowed it. The suite had never run in CI.
+dev = ["pytest>=7"]
 
 [project.scripts]
 skvoice = "skvoice.__main__:main"
