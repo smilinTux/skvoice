@@ -1,17 +1,18 @@
 # skvoice Architecture
 
-> ⚠️ **Accuracy note, 2026-08-14.** This document was written at v0.2.5. One
-> release later, v0.2.6 retired the Anthropic SDK and the Claude OAuth path in
-> favour of two plain OpenAI-compatible `/v1/chat/completions` endpoints, and
-> this file was never updated. Two sections below therefore describe a design
-> that **no longer runs**: **"LLM turn & the tool loop"** and **"Voice tools
-> (`tools.py`)"**. In particular, nothing imports `skvoice/tools.py` today, so
-> the tool loop is not wired in at all. Everything else here (the pipeline, the
+> ⚠️ **Accuracy note, updated 2026-08-15.** This document was written at v0.2.5.
+> v0.2.6 retired the Anthropic SDK and the Claude OAuth path in favour of two
+> plain OpenAI-compatible `/v1/chat/completions` endpoints, and this file was
+> not updated. Two sections described a design that no longer ran: **"LLM turn
+> & the tool loop"** and **"Voice tools (`tools.py`)"**.
+>
+> **`skvoice/tools.py` has since been deleted** as unreachable code, so those
+> two sections have been cut down to a removal note rather than rewritten;
+> there is no tool loop to describe. Everything else here (the pipeline, the
 > WebSocket protocol and state machine, the agent/ritual model, the source map,
 > networking, and the integration adapter) was re-verified against the code and
 > is accurate. For the current LLM leg and the exposure posture, read
-> [`../SOP.md`](../SOP.md). Rewriting the two stale sections is tracked as a
-> follow-up in SOP.md section 9.
+> [`../SOP.md`](../SOP.md).
 
 skvoice is an **orchestrator**, not a model host. It owns no STT, TTS, or LLM
 weights, and keeps no durable state — conversation histories live in memory and
@@ -22,7 +23,7 @@ agent it speaks as — its soul, voice, memories, and emotional state — comes
 entirely from the SKCapstone agent profile it loads at runtime.
 
 This document covers the pipeline, the WebSocket protocol and connection state
-machine, the agent/memory model, the LLM + tool loop, the integration adapter,
+machine, the agent/memory model, the LLM leg, the integration adapter,
 and where skvoice sits in SKStack v2.
 
 ## The shape of it
@@ -71,8 +72,7 @@ sequenceDiagram
     participant E as emotion.py
     participant M as memory.py
     participant L as llm.py
-    participant K as Claude / Ollama
-    participant T as tools.py
+    participant K as LLM (primary, then fallback)
 
     C->>WS: binary PCM frames (16kHz mono)
     C->>WS: "END_OF_SPEECH"
@@ -86,12 +86,9 @@ sequenceDiagram
     WS->>L: get_response(transcript, emotion, history, system, agent)
     L->>M: search_memories(transcript) → skmemory search
     M-->>L: [relevant memories]
-    L->>K: messages.create(system, messages, tools)
-    alt stop_reason == tool_use
-        K-->>L: tool_use block(s)
-        L->>T: handle_tool(name, input, agent)
-        T-->>L: tool result
-        L->>K: continue (≤ 4 rounds total)
+    L->>K: POST Config.LLM_URL /v1/chat/completions
+    alt primary errors or returns empty text
+        L->>K: POST Config.FALLBACK_URL /v1/chat/completions
     end
     K-->>L: final text
     L-->>WS: stripped reply (no markdown/emoji)
@@ -197,75 +194,61 @@ never hard-fails on a missing dependency.
 `voice_name` (from `soul/base.json`, default = agent name) is what the TTS
 adapter sends as the `voice` field, so each agent speaks in its own cloned voice.
 
-## LLM turn & the tool loop
+## LLM turn
 
-> ⚠️ **STALE as of v0.2.6.** This section and the "Voice tools" section that
-> follows describe the retired Anthropic SDK design. The current `llm.py` has no
-> tool loop, no OAuth handling, and no Ollama call: it POSTs to
-> `Config.LLM_URL` and, on failure or empty text, to `Config.FALLBACK_URL`, both
-> OpenAI-compatible. `skvoice/tools.py` is not imported by anything. Kept here
-> only as a record of the previous design. See [`../SOP.md`](../SOP.md) § 2.
-
-`llm.get_response` builds the message list, pre-fetches memory, and runs a
-bounded agentic loop against Claude (`llm.py`):
+`llm.get_response` builds the message list, pre-fetches memory, and makes a
+single OpenAI-compatible chat call, with a second endpoint as a fallback
+(`llm.py`):
 
 ```mermaid
 flowchart TD
-    IN["transcript + emotion + memory_ctx"] --> MSG["build messages<br/>(merge consecutive same-role,<br/>ensure user-last alternation)"]
-    MSG --> CALL["client.messages.create<br/>(model, system, messages, tools=VOICE_TOOLS)"]
-    CALL --> SR{stop_reason}
-    SR -->|tool_use| EXEC["handle_tool(name, input, agent)<br/>append tool_use + tool_result"]
-    EXEC --> RND{"round < 4?"}
-    RND -->|yes| CALL
-    RND -->|no| GIVEUP["“I got carried away…”"]
-    SR -->|else| TXT["extract text → _strip_formatting<br/>(no markdown / no emoji)"]
-    CALL -.->|"401 / auth"| REFRESH["clear token cache,<br/>retry once"]
-    CALL -.->|"other failure"| OLLAMA["_ollama_fallback<br/>(local qwen, think=off)"]
+    IN["transcript + emotion + memory_ctx"] --> MSG["_to_plain_messages<br/>(merge consecutive same-role,<br/>coerce to {role, content:str})"]
+    MSG --> CALL["POST Config.LLM_URL<br/>/v1/chat/completions (httpx)"]
+    CALL --> OK{"HTTP ok and<br/>text non-empty?"}
+    OK -->|yes| TXT["_strip_formatting<br/>(no markdown / no emoji)"]
+    OK -->|"no: error or empty"| FB["POST Config.FALLBACK_URL<br/>Config.FALLBACK_MODEL"]
+    FB --> TXT
 ```
 
-- **Auth** (`_get_client`): reads the Claude OAuth token + expiry from
-  `~/.claude/.credentials.json` (handles ms vs s and ISO expiry), caches the
-  client until 5 minutes before expiry, and re-reads the file each refresh (a
-  token watcher may rewrite it). On a `401`/auth error the cache is cleared and
-  the turn is retried once. The SDK client is created with the
-  `claude-code`/`oauth` beta headers; if the `anthropic` SDK isn't importable,
-  raw `httpx` is used (`_simple_response`, no tools).
-- **Tools** are Anthropic `tool_use`; the loop runs at most 4 rounds before
-  bailing with a graceful line. Final text is stripped of markdown and emoji so
-  it speaks cleanly.
-- **Fallback** (`_ollama_fallback`): on any unrecovered failure, the messages
-  are flattened to plain text and sent to local Ollama (`/api/chat`, `think:
-  false`, trimmed system prompt) so the agent still answers when Claude is
-  unreachable.
+- **No vendor SDK and no cloud credential.** Both legs are plain
+  `/v1/chat/completions` over `httpx`. Any server speaking that API works.
+- **Fallback trigger** is an error *or* an empty completion, not just an
+  exception. Config for it is `SKVOICE_FALLBACK_URL` and
+  `SKVOICE_FALLBACK_MODEL`.
+- **Formatting strip** removes markdown and emoji, because the text is spoken.
 
-### Voice tools (`tools.py`)
+### Voice tools: removed
 
-> ⚠️ **NOT WIRED IN.** Nothing imports `skvoice/tools.py`. None of the tools
-> below are reachable by the model today. Memory is still consulted, but only
-> through the unconditional pre-fetch in `llm.get_response`.
+> **`skvoice/tools.py` was deleted.** It defined five tools in Anthropic
+> `tool_use` format (`search_memory`, `save_memory`, `web_search`,
+> `dispatch_agent`, `cloud9_status`) plus a `handle_tool` dispatcher and a
+> 4-round agentic loop driven from the old SDK path.
+>
+> **None of it had run since v0.2.6.** The tool loop went away with the SDK,
+> nothing imported the module afterwards, and yet this file and the README kept
+> advertising the five tools as live features. Documented-but-unreachable code
+> is worse than absent code, because it gets planned against. So it was removed
+> rather than left in place with a warning.
+>
+> The previous implementation is in git history if it is ever wanted back, but
+> **do not restore it as-is**: the definitions are in Anthropic `tool_use`
+> format, and the current `llm.py` speaks OpenAI-compatible chat. A tools
+> feature has to be written against that API.
 
-| Tool | What it does | How |
-|---|---|---|
-| `search_memory` | Deep recall on demand | `skmemory search <q> --limit 5` |
-| `save_memory` | Persist a meaningful moment | `skmemory snapshot <content> --tag <tags>` |
-| `web_search` | Current info | SearXNG (`skpeek.skstack01.douno.it`) JSON, top 5 |
-| `dispatch_agent` | Delegate to a swarm specialist | `openclaw agent --agent <a> --message <task> --json` (artisan/coder/architect/scholar/herald/sentinel/steward) |
-| `cloud9_status` | Read emotional state | parses `trust/trust.json` + newest `trust/febs/*.feb` (primary emotion, valence, Cloud 9 / OOF, bond, topology) |
-
-Tool subprocesses run with `SKCAPSTONE_AGENT=<agent>` in the environment and a
-short timeout, so each tool operates in the calling agent's namespace.
+**skvoice has no model-callable tools today.** Memory is still consulted, but
+only through the unconditional pre-fetch in `llm.get_response`, which the model
+does not choose to invoke.
 
 ## Source map
 
 | Module | Role |
 |---|---|
-| `skvoice/__main__.py` | Console entry point — `uvicorn.run(skvoice.service:app, 0.0.0.0:PORT)` |
+| `skvoice/__main__.py` | Console entry point, `uvicorn.run(skvoice.service:app, Config.HOST:Config.PORT)`. Bind defaults to `127.0.0.1` |
 | `skvoice/service.py` | FastAPI app, `/health`, `/voice/agents`, `/voice/clear`, the `/ws/voice/{agent}` WebSocket, the speech/text pipelines, group-chat & session-injection handling, caches |
 | `skvoice/config.py` | Env-driven config + STT/TTS URL resolution (full-URL > base-URL > legacy alias > default) |
 | `skvoice/agent_profile.py` | Profile loader + `skmemory ritual --full` rehydration + `VOICE_RULES` |
 | `skvoice/memory.py` | `skmemory search` pre-fetch + `skmemory snapshot` save |
 | `skvoice/llm.py` | Memory-aware turn against an OpenAI-compatible primary, then a sovereign fallback on failure or empty text; formatting strip |
-| `skvoice/tools.py` | `VOICE_TOOLS` definitions + `handle_tool` dispatch. **Not imported by anything since v0.2.6** |
 | `skvoice/audio.py` | PCM→WAV, STT POST (`transcribe`), TTS POST (`synthesize`) |
 | `skvoice/emotion.py` | RMS / ZCR / autocorrelation-pitch analysis → emotion tags + cue string |
 | `skvoice/integration.py` | Optional skcapstone adapter — sk-alert, skscheduler health job, discovery registry |

@@ -11,6 +11,11 @@ WorkingDirectory=%h/clawd/skcapstone-repos/skvoice
 EnvironmentFile=-%h/.config/skvoice/skvoice.env
 Environment=SKVOICE_PORT=18800
 Environment=SKVOICE_AGENT=lumina
+# SKVOICE_HOST is deliberately NOT set here, so the loopback default in
+# skvoice/config.py applies. No skvoice route is authenticated, so a wildcard
+# bind is an opt-in. If an off-box client needs this service, set SKVOICE_HOST
+# in the EnvironmentFile above, preferring the tailnet address to 0.0.0.0.
+# Before v0.2.8 the bind was hardcoded 0.0.0.0 and could not be narrowed.
 ExecStart=%h/.skenv/bin/skvoice
 Restart=on-failure
 RestartSec=5

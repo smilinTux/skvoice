@@ -8,7 +8,7 @@ from skvoice.config import Config
 def main():
     uvicorn.run(
         "skvoice.service:app",
-        host="0.0.0.0",
+        host=Config.HOST,
         port=Config.PORT,
     )
 

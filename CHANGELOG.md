@@ -13,14 +13,77 @@ they record what shipped, not a retro-fitted narrative.
 
 ## [Unreleased]
 
+### Removed
+
+- 🔴 **`skvoice/tools.py` is DELETED.** It defined five voice tools
+  (`search_memory`, `save_memory`, `web_search`, `dispatch_agent`,
+  `cloud9_status`), a `handle_tool` dispatcher, and a 4-round agentic loop, and
+  `README.md` plus `docs/ARCHITECTURE.md` documented all five as **live
+  features**. **None of them had run since v0.2.6**, when the Anthropic SDK path
+  (and with it the tool loop) was retired. Nothing imported the module: a grep
+  for `from skvoice.tools`, `from skvoice import tools`, `import skvoice.tools`,
+  `VOICE_TOOLS`, and `handle_tool` across every `.py` under `~/clawd` found no
+  importer, and `tests/` never referenced it.
+
+  **If you were counting on any of those five tools, they were already gone.**
+  This change removes the code and the false documentation, it does not remove
+  a working feature. Memory is still consulted every turn through the
+  unconditional pre-fetch in `llm.get_response`, which is not model-callable.
+
+  The old implementation is in git history, but **do not restore it as-is**: its
+  definitions are in Anthropic `tool_use` format and the current `llm.py` speaks
+  OpenAI-compatible chat. A tools feature has to be written against that API.
+  A `docs-evidence` check now fails if `skvoice/tools.py`, `VOICE_TOOLS`, or
+  `def handle_tool` reappears under `skvoice/`.
+- **`anthropic>=0.40` dropped from `pyproject.toml` dependencies.** Declared
+  since the SDK path was retired in v0.2.6, imported by nothing:
+  `grep -rni anthropic skvoice/` matches only a prose mention in `llm.py`'s
+  docstring. Every install has been pulling the SDK and its transitive
+  dependencies for no reason.
+- **The `skvoice.skworld.io` link is out of the `README.md` footer.** The name
+  does not resolve from this node (`getent hosts` returns nothing), so it is
+  now noted as planned rather than advertised as live. No request was made to
+  the public internet, and whether it resolves elsewhere was not tested.
+
+### Security
+
+- 🔐 **`SKVOICE_HOST` added; the bind now defaults to `127.0.0.1`.**
+  `skvoice/__main__.py` passed the string literal `"0.0.0.0"` to `uvicorn.run`
+  with **no environment override**, unlike every other configurable in the
+  service. Since **no route in `skvoice/service.py` is authenticated** (`/health`,
+  `/voice/agents`, `POST /voice/clear`, and the `/ws/voice/{agent}`,
+  `/ws/video/{agent}`, `/ws/facetime/{agent}` WebSockets), the bind address is
+  the only access control skvoice has, and it could not be narrowed without
+  editing code. Anyone who could reach the port could converse as any agent
+  (with that agent's full rehydrated identity as the system prompt), wipe every
+  live conversation, or enumerate `~/.skcapstone/agents`.
+
+  **Measured blast radius, not inflated:** LAN `192.168.0.0/16` plus the
+  tailnet, **not the internet**. The host has no public interface and
+  `tailscale funnel status` does not publish `:18800`.
+
+  ⚠️ **This is a DEFAULT CHANGE and it can break a client.** A caller that
+  reached skvoice over the LAN or the tailnet stops connecting after upgrade
+  unless `SKVOICE_HOST` is set. It fails closed, which is the intent. Of the
+  callers a fleet grep found, four use loopback and are unaffected; skchat's
+  `deploy/skstack01-stack.yml` pins `ws://192.168.0.158:18800/ws/voice` and
+  **would break**, though that stack is not currently deployed. A grep is not
+  an audit. Read `SOP.md` section 5 before reinstalling, and set `SKVOICE_HOST`
+  explicitly (preferring a tailnet address to `0.0.0.0`) if you need the old
+  reach. **The live systemd unit and env file were deliberately not touched.**
+
+  Authentication is still absent. The bind default contains the exposure; it
+  does not authenticate anything.
+
 ### Added
 
 - **`SOP.md`**, the standard operating procedures: architecture with mermaid
   diagrams, build, test, release and rollback, an explicit
   `### Front-end / Exposure` section, configuration reference, API reference,
   a symptom-to-check troubleshooting table, and maturity/version reference.
-  It ends with a `docs-evidence` block: 12 hermetic shell checks that each exit
-  non-zero the moment a documented fact drifts from the code.
+  It ends with a `docs-evidence` block: hermetic shell checks that each exit
+  non-zero the moment a documented fact drifts from the code. Now 15 of them,
+  after the bind and dead-code checks above were reworked.
 - **`SECURITY.md`**: GitHub private vulnerability reporting as the primary
   channel, a 72 hour acknowledgement SLA, in and out of scope, a supported
   versions table, a safe-harbour statement, and a plainly stated known posture.
@@ -30,10 +93,10 @@ they record what shipped, not a retro-fitted narrative.
 - **`.github/workflows/ci.yml`**: the first CI gate that actually runs the test
   suite on an ordinary push or pull request, across Python 3.10, 3.11, and 3.12,
   with no `continue-on-error`.
-- **`.github/workflows/docs-check.yml`**: the shared `sk-standards` docs gate at
-  tiers 1 and 2 (required docs present; a code change also updates this file).
-  Tier 3, which executes the `docs-evidence` block, is a follow-up once the gate
-  has run clean.
+- **`.github/workflows/docs-check.yml`**: the shared `sk-standards` docs gate,
+  now at `tiers: "1,2,3"` (required docs present; a code change also updates
+  this file; **and every check in the `docs-evidence` block is executed**).
+  Tier 3 being live is why a bind change has to update `SOP.md` in the same PR.
 - A **`dev` extra** in `pyproject.toml` (`pytest`). `publish.yml:41` has always
   run `pip install -e ".[dev]" || pip install -e .`, but no `dev` extra existed,
   so the first half always failed, the fallback installed no pytest, and the
@@ -55,29 +118,41 @@ they record what shipped, not a retro-fitted narrative.
     as was the Anthropic credentials requirement.
   - The Claude `tool_use` loop is **not wired in**: nothing imports
     `skvoice/tools.py`. The five voice tools were documented as live and are
-    not.
+    not. (Superseded: the module has since been deleted outright, see
+    **Removed** above.)
   - `/ws/video/{agent}` and `/ws/facetime/{agent}`, shipped in v0.2.8, were
     undocumented in the README.
   - The listen address is `0.0.0.0`, and the README did not say that this is
-    hardcoded with no environment override.
-- **`docs/ARCHITECTURE.md`** carried the same retired LLM design. An accuracy
-  note now marks the two affected sections and points at `SOP.md`. The pipeline,
-  WebSocket protocol, agent/ritual, and integration sections remain accurate and
-  are unchanged.
+    hardcoded with no environment override. (Superseded: `SKVOICE_HOST` now
+    exists and defaults to loopback, see **Security** above.)
+- **`docs/ARCHITECTURE.md`** carried the same retired LLM design. The "LLM turn
+  & the tool loop" section has been **rewritten** against the current `llm.py`
+  (single OpenAI-compatible call, fallback on error or empty text, no tool loop,
+  no OAuth), and "Voice tools" is now a removal note rather than a table of
+  five tools that do not exist. The sequence diagram no longer shows a
+  `tools.py` participant, and the source map no longer lists the module. The
+  pipeline, WebSocket protocol, agent/ritual, and integration sections remain
+  accurate and are unchanged.
 
-### Known, documented, deliberately not changed here
+### Known, documented, still not changed here
 
-This is a documentation change; no runtime behaviour was touched. Recorded in
-`SOP.md` section 9 as follow-ups needing an operator decision:
+The first three items below were raised by the documentation pass and have since
+been **fixed** by the `SKVOICE_HOST` and dead-code entries above. They are left
+listed, struck through, so the sequence stays legible. The rest remain open and
+are recorded in `SOP.md` section 9 as follow-ups needing an operator decision:
 
-- The uvicorn bind host is hardcoded `0.0.0.0` with no override
-  (`skvoice/__main__.py:9-12`), which deviates from UNIFIED_INGRESS_STANDARD,
-  and no route is authenticated. On the current host the reachable surface is
-  LAN plus tailnet, not the internet: there is no public interface and Tailscale
-  Funnel does not publish `:18800`.
-- `skvoice/tools.py` is dead code, `anthropic>=0.40` is declared but imported by
-  nothing, and `Config.CREDENTIALS_PATH` is read by nothing.
-- `publish.yml:43` keeps `continue-on-error: true`, so a release can still ship
+- ~~The uvicorn bind host is hardcoded `0.0.0.0` with no override.~~ Fixed.
+  **No route is authenticated, and that is still true.**
+- ~~`skvoice/tools.py` is dead code.~~ Deleted.
+- ~~`anthropic>=0.40` is declared but imported by nothing.~~ Dropped.
+- `Config.CREDENTIALS_PATH` is read by nothing. Still present.
+- 🔴 **The deployed build is six releases behind.** On both 2026-08-14 and
+  2026-08-15, `/health` on noroc2027 reported `"version":"0.2.2"` while the
+  newest remote tag was `v0.2.8`. **This is a deploy issue, not a code one**,
+  and nothing in this changelog fixes it: the operator action is a reinstall
+  plus restart. Note that the same reinstall is what activates the loopback
+  bind default, so read the `SKVOICE_HOST` entry above first.
+- `publish.yml` keeps `continue-on-error: true`, so a release can still ship
   on a red suite.
 - The autouse fixture in `tests/test_integration_adapter.py:34-41` false-positives
   on any host where skvoice is running, because the live service writes

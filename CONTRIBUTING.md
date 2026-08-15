@@ -126,16 +126,21 @@ and the rollback procedure. Do not hardcode a version anywhere.
 
 ## Changing the exposure posture
 
-skvoice currently binds `0.0.0.0` with no authentication, which deviates from
-UNIFIED_INGRESS_STANDARD. That is documented, not endorsed (`SOP.md` section 5,
-`SECURITY.md`). A PR that makes the bind configurable and defaults it to
-loopback is wanted, but it changes deployed behaviour, so:
+**Done, as of the `SKVOICE_HOST` change.** The bind is now
+`os.getenv("SKVOICE_HOST", "127.0.0.1")` via `Config.HOST`, the `docs-evidence`
+checks pin the new default instead of the old literal, and operators who need
+the wildcard set the variable. **The still-open half is authentication**: no
+route in `skvoice/service.py` has any, so the bind address remains the only
+access control. A PR that adds auth is wanted.
 
-- add `SKVOICE_HOST` with a `127.0.0.1` default rather than removing the
-  wildcard outright,
-- update the `docs-evidence` checks that currently pin the hardcoded bind,
-- call out in the PR body that operators relying on the wildcard must set the
-  variable.
+If you touch the exposure posture again, the same rules apply:
+
+- prefer a new variable with a safe default over changing behaviour silently,
+- **update the `docs-evidence` block in `SOP.md` in the SAME PR.** It runs at
+  `tiers: "1,2,3"`, so it is executed in CI, and it pins the bind. Changing the
+  bind without updating it turns the gate red. That is the gate working.
+- call out any default change in the PR body, with the callers you checked and
+  the ones you could not.
 
 ## Reporting a security issue
 
