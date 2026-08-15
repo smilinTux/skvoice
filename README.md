@@ -47,7 +47,7 @@ state, and degrades gracefully when the rest of the stack is absent.
 ```mermaid
 flowchart TD
     subgraph COMMS["Comms (transport)"]
-      SKVOICE["**skvoice**<br/>STT → LLM+tools → TTS · per-agent WS · emotion read"]
+      SKVOICE["**skvoice**<br/>STT → LLM → TTS · per-agent WS · emotion read"]
       SKCHAT["skchat<br/>(text · optional WS proxy)"]
     end
     subgraph CORE["Core (identity & continuity)"]
@@ -86,9 +86,14 @@ See **[SOP.md](SOP.md)** for the operating procedures: build, test, deploy and
 rollback, the exposure posture, the full configuration and API reference, and a
 symptom-to-check troubleshooting table.
 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** covers the request lifecycle,
-the connection state machine, the source map, and the integration adapter (its
-"LLM turn & the tool loop" and "Voice tools" sections describe the design
-retired in v0.2.6; SOP.md section 2 has the current one).
+the connection state machine, the source map, and the integration adapter.
+
+ℹ️ **skvoice has no model-callable tools.** Earlier versions of this README and
+of ARCHITECTURE.md advertised five (`search_memory`, `save_memory`,
+`web_search`, `dispatch_agent`, `cloud9_status`). The tool loop was retired with
+the Anthropic SDK in v0.2.6, `skvoice/tools.py` was left behind unreachable, and
+it has now been deleted. Memory is still consulted on every turn, but as an
+unconditional pre-fetch, not as something the model calls.
 
 ## Quickstart
 
@@ -102,14 +107,23 @@ export SKVOICE_AGENT=lumina
 export SKVOICE_TTS_BASE=http://skworld-100:18793
 export SKVOICE_STT_BASE=http://skworld-100:18794
 
-skvoice                                # → uvicorn on 0.0.0.0:18800
+skvoice                                # → uvicorn on 127.0.0.1:18800
 ```
 
-⚠️ **The listen address is `0.0.0.0` and it is hardcoded** in
-`skvoice/__main__.py` with no environment override; only the port is
-configurable. **No route is authenticated.** Anyone who can reach the port can
-converse as any agent. Read [SOP.md § Front-end / Exposure](SOP.md) before
-putting this on a network you do not trust.
+⚠️ **No route is authenticated**, so the bind address is the only access control
+skvoice has. It listens on `127.0.0.1` by default for that reason. Widen it with
+`SKVOICE_HOST` only when an off-box client genuinely needs it, and prefer a
+tailnet address to `0.0.0.0`:
+
+```bash
+export SKVOICE_HOST=0.0.0.0            # every interface. Deliberate choice, not a default.
+```
+
+Anyone who can reach the port can converse as any agent, wipe every live
+conversation, and enumerate your agents. Read
+[SOP.md § Front-end / Exposure](SOP.md) before putting this on a network you do
+not trust. Releases up to v0.2.8 bound `0.0.0.0` unconditionally, so a host
+upgrading from one of those may be relying on the old behaviour.
 
 Then connect a client to the WebSocket and start talking:
 
@@ -157,7 +171,8 @@ the systemd unit). See `.env.example` for the annotated template.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SKVOICE_PORT` | `18800` | HTTP/WebSocket port. The bind **host** is not configurable, see the warning above |
+| `SKVOICE_HOST` | `127.0.0.1` | Bind address. Loopback by default because no route is authenticated, see the warning above |
+| `SKVOICE_PORT` | `18800` | HTTP/WebSocket port |
 | `SKVOICE_AGENT` | `lumina` | Default agent loaded on startup |
 | `SKVOICE_MODEL` | `claude-haiku-4-5` | Model id sent to the primary LLM endpoint |
 | `SKVOICE_LLM_URL` | `http://localhost:18783/v1/chat/completions` | Primary LLM, OpenAI-compatible |
@@ -234,6 +249,10 @@ integrated, skvoice writes `~/.skcapstone/config/jobs.d/skvoice_health.yaml`
 
 ---
 
-Part of the **[SKWorld](https://skworld.io)** sovereign ecosystem · site:
-**[skvoice.skworld.io](https://skvoice.skworld.io)** · 🐧 smilinTux ·
+Part of the **[SKWorld](https://skworld.io)** sovereign ecosystem · 🐧 smilinTux ·
 *staycuriousANDkeepsmilin*
+
+<sub>A `skvoice.skworld.io` site is planned, not live. The link was removed from
+this footer on 2026-08-15 because the name did not resolve
+(`getent hosts skvoice.skworld.io` returned nothing). Put it back when the site
+is up.</sub>

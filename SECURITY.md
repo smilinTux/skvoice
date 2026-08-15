@@ -59,8 +59,9 @@ something still goes wrong, tell us; we will work it out.
 - The FaceTime binary framing in `skvoice/facetime.py` (a parser reachable by
   untrusted input).
 - Config handling in `skvoice/config.py`, including URL resolution.
-- Subprocess invocation of the `skmemory` CLI in `skvoice/memory.py`,
-  `skvoice/agent_profile.py`, and `skvoice/tools.py`.
+- Subprocess invocation of the `skmemory` CLI in `skvoice/memory.py` and
+  `skvoice/agent_profile.py`. (`skvoice/tools.py` also shelled out to
+  `skmemory` and `openclaw`, but it was dead code and has been deleted.)
 - The packaging and release path (`pyproject.toml`, `.github/workflows/`).
 
 ### Out of scope
@@ -95,26 +96,35 @@ the port can:
 
 Access control is entirely the network's job today.
 
-### 2. The bind address is hardcoded to `0.0.0.0`
+### 2. The bind address is the only access control, so it defaults to loopback
 
-`skvoice/__main__.py:9-12` calls `uvicorn.run(..., host="0.0.0.0",
-port=Config.PORT)`. The **port** is env-configurable (`SKVOICE_PORT`, default
-`18800`); the **host** is a string literal with no override. skvoice therefore
-listens on every interface of the host.
+Because item 1 means nothing authenticates, **the bind address is the entire
+access-control story.** `skvoice/__main__.py` passes `Config.HOST` to
+`uvicorn.run`, and `Config.HOST` reads `SKVOICE_HOST` with a default of
+`127.0.0.1`.
 
-This deviates from UNIFIED_INGRESS_STANDARD, which requires loopback or a
-tailnet bind and never a wildcard. It is recorded as a deviation in `SOP.md`
-section 5 with a recommended fix (an `SKVOICE_HOST` variable defaulting to
-`127.0.0.1`). It is not fixed here.
+**Through v0.2.8 the host was the string literal `"0.0.0.0"` with no override,**
+so those releases listened on every interface of the host and could not be
+narrowed without editing the code. That deviated from
+UNIFIED_INGRESS_STANDARD, which requires loopback or a tailnet bind and never a
+wildcard. Setting `SKVOICE_HOST=0.0.0.0` restores the old behaviour if you need
+it, and that is now an explicit choice rather than the only option.
+
+**Upgrading from <= v0.2.8 changes behaviour.** A client that reached skvoice
+over the LAN or the tailnet will stop connecting after the upgrade unless
+`SKVOICE_HOST` is set. That is the intended direction: it fails closed. Audit
+your callers first. `SOP.md` section 5 lists the ones a fleet grep found.
 
 **Scope of the exposure on the current deployment**, so the risk is neither
 overstated nor waved away: the host running skvoice has no public interface. Its
 addresses are loopback, a LAN address, a Tailscale address, and docker bridges.
 Internet ingress is Tailscale Funnel only, and Funnel publishes a specific list
 of routes that **does not include `:18800`**. So the reachable surface is **LAN
-plus tailnet**, not the internet. On a differently configured host, a wildcard
-bind plus no auth would be internet-exposed; do not deploy this behind a public
-interface without a proxy that authenticates.
+plus tailnet**, not the internet, and that measurement was taken while the
+service was still running a wildcard-bind build. On a differently configured
+host, a wildcard bind plus no auth would be internet-exposed; do not deploy this
+behind a public interface without a proxy that authenticates, whatever
+`SKVOICE_HOST` is set to.
 
 ### 3. Agent identity is loaded into every session
 

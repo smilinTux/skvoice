@@ -57,7 +57,7 @@ one LLM call, then TTS back over the same socket as binary audio.
 
 | File | Why you start here |
 |---|---|
-| `skvoice/__main__.py` | The whole entry point, 17 lines. `main()` calls `uvicorn.run("skvoice.service:app", host="0.0.0.0", port=Config.PORT)`. The console script `skvoice` points here. |
+| `skvoice/__main__.py` | The whole entry point, 17 lines. `main()` calls `uvicorn.run("skvoice.service:app", host=Config.HOST, port=Config.PORT)`. The console script `skvoice` points here. |
 | `skvoice/service.py` | The FastAPI app: all 3 HTTP routes, all 3 WebSocket routes, `_conversation_loop` (the frame dispatcher), `_process_speech` and `_process_text` (the 12-step turn). |
 | `skvoice/config.py` | Every knob. One `Config` class read from env at import time, plus `_resolve_url` (full URL env, then base URL env, then legacy alias, then localhost default). |
 | `skvoice/llm.py` | The LLM leg. Two OpenAI-compatible `/v1/chat/completions` endpoints, primary then fallback, plus markdown/emoji stripping so the text speaks cleanly. |
@@ -68,7 +68,7 @@ one LLM call, then TTS back over the same socket as binary audio.
 ```mermaid
 flowchart LR
     CLIENT["client<br/>(browser, skchat)"]
-    subgraph SVC["skvoice (FastAPI + uvicorn, 0.0.0.0:18800)"]
+    subgraph SVC["skvoice (FastAPI + uvicorn, SKVOICE_HOST:18800, default 127.0.0.1)"]
       WS["/ws/voice · /ws/video · /ws/facetime<br/>(_conversation_loop)"]
       PIPE["_process_speech / _process_text"]
       PROF["profile cache<br/>(per agent, lazy)"]
@@ -144,31 +144,41 @@ returns to `listening`; the socket is never torn down for a backend failure.
 | `skvoice/emotion.py` | RMS, zero-crossing, autocorrelation pitch, to a one-line cue |
 | `skvoice/facetime.py` | 12-byte little-endian framing shim for the skchat FaceTime fallback |
 | `skvoice/integration.py` | Optional skcapstone adapter (sk-alert, skscheduler, registry) |
-| `skvoice/tools.py` | **Not wired in.** See "Known drift" below. |
 
 ### Known drift in this repo (read before trusting the other docs)
 
-Verified 2026-08-14 against the tree at `origin/main`:
+First recorded 2026-08-14. Items 1 and 2 were **resolved** by deleting the dead
+code (card `169a81d2`); they are kept here so the history is legible.
 
-1. **`skvoice/tools.py` is dead code.** Nothing imports it: `grep -rn "import
-   tools" skvoice/` returns nothing, and `llm.py` has no tool loop. The
-   `search_memory` / `save_memory` / `web_search` / `dispatch_agent` /
-   `cloud9_status` tool surface described in `README.md` and
-   `docs/ARCHITECTURE.md` **does not run today**. Memory is still reached, but
-   only through the unconditional pre-fetch in `llm.get_response`, not as a
-   model-callable tool.
-2. **The Anthropic SDK path was retired.** `llm.py:1-5` says so explicitly. Both
-   LLM legs are now plain OpenAI-compatible `/v1/chat/completions`. The
-   `anthropic>=0.40` entry in `pyproject.toml:16` is a leftover: nothing in
-   `skvoice/` imports it.
-3. **`Config.CREDENTIALS_PATH` is unused.** Defined at `config.py:77-79`, read by
-   nothing since the OAuth path was removed.
+1. ~~**`skvoice/tools.py` is dead code.**~~ **RESOLVED: the module was deleted.**
+   It defined five tools (`search_memory`, `save_memory`, `web_search`,
+   `dispatch_agent`, `cloud9_status`) that `README.md` and
+   `docs/ARCHITECTURE.md` advertised as live features. Nothing imported it,
+   and `llm.py` has no tool loop, so none of them had run since v0.2.6.
+   Re-verified before deletion: a grep for `from skvoice.tools`,
+   `from skvoice import tools`, `import skvoice.tools`, `VOICE_TOOLS`, and
+   `handle_tool` across every `.py` under `~/clawd` found no importer, and
+   `tests/` never referenced it. Memory is still reached, but only through the
+   unconditional pre-fetch in `llm.get_response`, never as a model-callable
+   tool. **If you want tools back, write them against the current
+   OpenAI-compatible `llm.py`; do not resurrect the Anthropic-format
+   definitions from git history.**
+2. ~~**The `anthropic>=0.40` dependency is a leftover.**~~ **RESOLVED: dropped
+   from `pyproject.toml`** in the same change. The SDK path was retired in
+   v0.2.6; both LLM legs are plain OpenAI-compatible `/v1/chat/completions`
+   over `httpx`, and `grep -rni anthropic skvoice/` now matches only a prose
+   mention in `llm.py`'s docstring.
+3. **`Config.CREDENTIALS_PATH` is unused.** Defined in `config.py`, read by
+   nothing since the OAuth path was removed. Still present.
 4. **`docs/ARCHITECTURE.md` sections "LLM turn & the tool loop" and "Voice tools"
-   describe the retired design.** The pipeline, WebSocket protocol, agent/ritual,
-   and integration sections of that file are still accurate.
+   describe the retired design.** Both now carry a REMOVED banner rather than a
+   STALE one, because the module they document no longer exists. The pipeline,
+   WebSocket protocol, agent/ritual, and integration sections of that file are
+   still accurate.
+5. **The deployed build lags the newest tag.** This is a deploy issue, not a
+   code one, and no code change can fix it. See section 5, Rollback and drift.
 
-None of these are fixed by this document. They are recorded so nobody plans work
-on a surface that is not there. See section 9 for the follow-ups.
+See section 9 for the remaining follow-ups.
 
 ---
 
@@ -331,8 +341,8 @@ loses in-flight conversations and nothing else. Clients reconnect.
 
 **Deployed-version drift is real and invisible without checking.** On
 2026-08-14 the running service reported `"version":"0.2.2"` while the newest
-remote tag was `v0.2.8`. `/health` is the source of truth for what is actually
-running; the tag is not.
+remote tag was `v0.2.8`, and that was **still true on 2026-08-15**. `/health` is
+the source of truth for what is actually running; the tag is not.
 
 ### Front-end / Exposure
 
@@ -340,18 +350,30 @@ running; the tag is not.
 
 | Property | Value |
 |---|---|
-| Bind address | **`0.0.0.0`, hardcoded, no env override** (`skvoice/__main__.py:9-12`) |
-| Port | `18800` (`SKVOICE_PORT`, default at `skvoice/config.py:56`) |
-| Observed | `ss -tlnp` on noroc2027: `LISTEN 0.0.0.0:18800 users:(("skvoice",pid=467443))` |
+| Bind address | `SKVOICE_HOST`, **default `127.0.0.1`** (`skvoice/config.py`), passed to `uvicorn.run` in `skvoice/__main__.py` |
+| Port | `18800` (`SKVOICE_PORT`, default in `skvoice/config.py`) |
+| Observed | `ss -tlnp` on noroc2027 on 2026-08-15, still running the pre-fix build: `LISTEN 0.0.0.0:18800 users:(("skvoice",pid=467443))` |
 | Public `:443` routes | none |
-| Authentication | none. No auth middleware exists in `skvoice/service.py` |
+| Authentication | **none.** No auth middleware exists in `skvoice/service.py` |
 
-⚠️ **This deviates from UNIFIED_INGRESS_STANDARD**, which requires a service to
-bind `127.0.0.1` or a tailnet address and never a wildcard. `Config.PORT` is
-env-configurable; the host is a string literal in the `uvicorn.run` call, so
-there is no way to narrow the bind without editing the code. Stating it plainly:
-skvoice listens on every interface on the box, and every WebSocket route is
-unauthenticated.
+⚠️ **Every route on this service is unauthenticated.** `GET /health`,
+`GET /voice/agents`, `POST /voice/clear`, and the three WebSockets
+`/ws/voice/{agent}`, `/ws/video/{agent}`, `/ws/facetime/{agent}` have no auth
+middleware in front of them. **The bind address is therefore the only access
+control skvoice has.** Treat widening it as a security decision, not a
+convenience setting.
+
+**Bind history.** Until the `SKVOICE_HOST` change, the host was the string
+literal `"0.0.0.0"` in the `uvicorn.run` call with no env override, unlike every
+other configurable in the service. That deviated from
+UNIFIED_INGRESS_STANDARD, which requires a service to bind `127.0.0.1` or a
+tailnet address and never a wildcard. The variable now exists and defaults to
+loopback.
+
+⚠️ **The running process has not picked this up.** The default change lands in
+code; it takes effect on the next reinstall plus restart. Until then `ss` still
+shows the wildcard, which is why the observed row above disagrees with the
+documented default.
 
 **Actual blast radius, scoped honestly.** On noroc2027 the interfaces are `lo`,
 `enp6s18` at `192.168.0.158/16` (LAN), `tailscale0` at `100.108.59.57` (tailnet),
@@ -368,14 +390,38 @@ emotional state, seeds, and strongest memories. They can also `POST
 /voice/clear` to wipe every live conversation, and `GET /voice/agents` to
 enumerate every directory under `~/.skcapstone/agents`.
 
-**Recommendation, not done in this PR** (this is a documentation change; the
-code is untouched): make the bind configurable, for example
-`host=os.getenv("SKVOICE_HOST", "127.0.0.1")`, and default it to loopback. Every
-consumer observed today is local or proxied (skchat proxies the WebSocket), and
-the health job in `integration.py:131` already curls `http://localhost:18800`.
-A loopback default plus an explicit opt-in for the tailnet address would bring
-skvoice in line with the standard without changing any working deployment that
-sets the variable. Filing that as a card is the operator's call.
+### Deploying the loopback default (read before you reinstall)
+
+**This is a default change, and a narrower default can break a client that was
+relying on the old one.** No audit of remote callers has ever been done, so the
+list below is what a fleet grep found, not a guarantee.
+
+Callers found by grepping `18800` across `~/clawd`:
+
+| Caller | Address it uses | Survives a loopback bind? |
+|---|---|---|
+| `skvoice/integration.py` health job | `http://localhost:18800/health` | yes |
+| skchat `voice_ws_lite.py` (`SKCHAT_SKVOICE_URL` default) | `ws://127.0.0.1:18800/ws/voice` | yes |
+| skchat `facetime.py` (`SKCHAT_SKVOICE_FACETIME_URL` default) | `ws://127.0.0.1:18800/ws/facetime` | yes |
+| skchat `deploy/skstack01-stack.yml` | **`ws://192.168.0.158:18800/ws/voice`** | **NO** |
+| skchat `deploy/v2/skchat-stack.yml` | `ws://voice:18800/ws/voice` | N/A, that is skchat's own in-container voice service, not this one |
+
+⚠️ **`skstack01-stack.yml` pins the LAN IP `192.168.0.158`, not loopback.** That
+manifest is not deployed on noroc2027 right now (`docker stack ls` and
+`docker service ls` are both empty, and no skchat container is running), so it
+is a latent break, not a live one. **A container reaching the host by LAN IP
+cannot reach a loopback listener even on the same box.**
+
+So, before or with the reinstall, do ONE of:
+
+1. Confirm no off-box or containerised client needs `:18800`, and take the
+   loopback default. This is the preferred end state.
+2. Set `SKVOICE_HOST` explicitly in `~/.config/skvoice/skvoice.env`, preferring
+   the host's tailnet address over `0.0.0.0`, and repoint
+   `skstack01-stack.yml` at whatever you chose.
+
+**The live unit was deliberately not changed by the code PR.** Editing
+`~/.config/skvoice/skvoice.env` or the installed unit is an operator action.
 
 ---
 
@@ -388,7 +434,8 @@ on `Config`, so a change requires a restart, not a reload.
 
 | Variable | Default (`skvoice/config.py`) | Meaning |
 |---|---|---|
-| `SKVOICE_PORT` | `18800` | Listen port. The bind host is not configurable, see section 5 |
+| `SKVOICE_HOST` | `127.0.0.1` | Bind address. Loopback by default because no route is authenticated. See section 5 before widening it |
+| `SKVOICE_PORT` | `18800` | Listen port |
 | `SKVOICE_AGENT` | `lumina` | Agent loaded at startup and used when a route omits the name |
 | `SKVOICE_MODEL` | `claude-haiku-4-5` | Model id sent to the primary LLM endpoint |
 | `SKVOICE_LLM_URL` | `http://localhost:18783/v1/chat/completions` | Primary LLM, OpenAI-compatible |
@@ -521,8 +568,10 @@ documented contract and tests; treat the rest as private.
 
 **Maturity-tier: operational.** Deployed as a systemd user unit on noroc2027,
 enabled and active, with no unit drift from the repo. It has a real test suite
-(small), a real secret-scan gate over full history, and a real CI gate as of
-this change. It is not hardened: no authentication, and a wildcard bind.
+(small), a real secret-scan gate over full history, and a real CI gate. It is
+**not hardened: there is still no authentication on any route.** The bind now
+defaults to loopback, which contains the exposure but does not authenticate
+anything.
 
 **Crypto-component: no.** Tier T0, N/A, no key material. See `SECURITY.md`.
 
@@ -544,36 +593,56 @@ To learn a version, ask a specific thing:
 | What would a build here produce? | `python -m setuptools_scm` |
 
 These four routinely disagree. On 2026-08-14 the running service reported
-`0.2.2` while the newest remote tag was `v0.2.8`.
+`0.2.2` while the newest remote tag was `v0.2.8`. **Re-checked 2026-08-15: both
+still hold**, so the deployed build is six releases behind. `/health` returns
+`"version":"0.2.2"` and `git ls-remote --tags origin` still tops out at
+`v0.2.8`. **This is a deploy issue and no code change can fix it**; the operator
+action is a reinstall plus restart, which is also what picks up the
+`SKVOICE_HOST` default (read section 5 first).
 
-### Follow-ups this document deliberately did not fix
+### Follow-ups
 
-Documentation only; no behaviour was changed. Each of these needs an operator
-decision and its own card:
+Done, in the `SKVOICE_HOST` + dead-code change (cards `44e05250`, `169a81d2`):
 
-1. Make the uvicorn bind host configurable and default it to loopback
-   (section 5).
-2. Decide `skvoice/tools.py`: rewire it into `llm.py` or delete it. Right now it
-   is documented and dead.
-3. Drop the unused `anthropic>=0.40` dependency and `Config.CREDENTIALS_PATH`.
-4. Rewrite the "LLM turn & the tool loop" and "Voice tools" sections of
-   `docs/ARCHITECTURE.md` against the current `llm.py`.
-5. Consider removing `continue-on-error: true` from `publish.yml:43` now that
+- ~~Make the uvicorn bind host configurable and default it to loopback.~~
+- ~~Decide `skvoice/tools.py`: rewire or delete.~~ Deleted.
+- ~~Drop the unused `anthropic>=0.40` dependency.~~
+- ~~Rewrite the stale `docs/ARCHITECTURE.md` tool sections.~~ Marked REMOVED
+  rather than rewritten: there is nothing to describe now.
+- ~~Move `docs-check.yml` to `tiers: "1,2,3"`.~~ Done separately.
+
+Still open, each needing an operator decision and its own card:
+
+1. **Reinstall the deployed build.** `/health` reports a version several
+   releases behind the newest tag. No code change fixes this; see "Version".
+2. **Take the loopback default on this host**, or set `SKVOICE_HOST` explicitly
+   in the env file. See section 5, "Deploying the loopback default". The code
+   PR did not touch the live unit.
+3. **Authenticate the routes.** The bind default contains the exposure; it does
+   not authenticate anything, and the ingress standard wants both.
+4. Drop the unused `Config.CREDENTIALS_PATH`.
+5. Consider removing `continue-on-error: true` from `publish.yml` now that
    `ci.yml` is the gate, so a release cannot ship on a red suite.
 6. Fix the `tests/test_integration_adapter.py` leak-check so it does not
-   false-positive on a host where skvoice is running.
-7. Move `.github/workflows/docs-check.yml` from `tiers: "1,2"` to `"1,2,3"` once
-   it has run clean.
+   false-positive on a host where skvoice is running. It asserts that no file
+   matching its prefix exists under `~/.skcapstone/config/jobs.d`, but a host
+   actually running skvoice has a real `skvoice_health.yaml` there. On such a
+   host 6 tests error; with a clean `HOME`, as on a CI runner, all 6 pass.
 
 ### Unverified / needs an operator pass
 
-- **`skvoice.skworld.io`**, advertised in the README footer, **does not
-  resolve** from noroc2027 (`Could not resolve host`). Either the site was never
-  stood up or DNS is elsewhere. Not corrected in this pass because the intent is
-  unknown.
-- **Whether any client depends on the wildcard bind.** Everything observed is
-  local or proxied through skchat, but no audit of remote callers was performed,
-  so narrowing the bind is proposed, not assumed safe.
+- **`skvoice.skworld.io`** does not resolve from noroc2027, re-checked
+  2026-08-15 with `getent hosts skvoice.skworld.io` (no output). Whether it
+  resolves from anywhere else was **not** tested; no request was made to the
+  public internet. The README footer now marks it planned rather than live.
+- **Whether any client depends on the wildcard bind.** ⚠️ **Still not fully
+  audited, and this is the main risk in the bind change.** A grep of `~/clawd`
+  for `18800` found the callers tabulated in section 5. Four use loopback and
+  are safe; skchat's `deploy/skstack01-stack.yml` pins `192.168.0.158` and
+  would break, though that stack is not currently deployed here. **A grep is
+  not an audit**: it cannot see a client outside `~/clawd`, on another node, in
+  a browser bookmark, or in a hand-run command. Nothing was tested against the
+  live socket. Confirm before reinstalling.
 - **The GPU-side STT and TTS services** are out of this repo's scope and were
   not exercised. On noroc2027, `18793` and `18794` are not listening locally;
   the deployed env file points STT at a remote host and TTS at `localhost:18797`,
@@ -585,16 +654,18 @@ decision and its own card:
 ---
 
 <!-- docs-evidence
-verified: 2026-08-14
+verified: 2026-08-15
 checks:
   - name: console entry point still points at skvoice.__main__:main
     run: grep -q 'skvoice = "skvoice.__main__:main"' pyproject.toml
   - name: documented default port 18800 matches config.py
     run: grep -q 'SKVOICE_PORT", "18800"' skvoice/config.py
-  - name: the wildcard bind documented in section 5 is still hardcoded
-    run: grep -q 'host="0.0.0.0"' skvoice/__main__.py
-  - name: no env override exists for the bind host
-    run: test -z "$(grep -c SKVOICE_HOST skvoice/__main__.py skvoice/config.py | grep -v ':0$')"
+  - name: the bind host comes from Config, not a hardcoded literal
+    run: grep -q 'host=Config.HOST' skvoice/__main__.py && ! grep -q '0\.0\.0\.0' skvoice/__main__.py
+  - name: the documented SKVOICE_HOST default is loopback, per section 5
+    run: grep -q 'SKVOICE_HOST", "127.0.0.1"' skvoice/config.py
+  - name: the shipped unit does not silently re-widen the bind
+    run: ! grep -qE '^[[:space:]]*Environment=SKVOICE_HOST' systemd/skvoice.service
   - name: unit file present with the documented ExecStart
     run: grep -q 'ExecStart=%h/.skenv/bin/skvoice' systemd/skvoice.service
   - name: unit loads the documented optional EnvironmentFile
@@ -605,8 +676,12 @@ checks:
     run: grep -q 'SKVOICE_MODEL", "claude-haiku-4-5"' skvoice/config.py
   - name: license is GPL-3.0-only as documented, not or-later
     run: grep -q 'license = "GPL-3.0-only"' pyproject.toml
-  - name: tools.py is still unwired, as section 2 Known drift states
-    run: test -f skvoice/tools.py && test -z "$(grep -rl 'from skvoice.tools\|from skvoice import tools\|import skvoice.tools' skvoice/)"
+  - name: the dead tools.py stays deleted and is not reintroduced unwired
+    run: test ! -e skvoice/tools.py
+  - name: no VOICE_TOOLS or handle_tool surface came back without a tool loop
+    run: ! grep -rq 'VOICE_TOOLS\|def handle_tool' skvoice/
+  - name: the unused anthropic dependency stays dropped
+    run: ! grep -qE '^[[:space:]]*"anthropic' pyproject.toml
   - name: version stays setuptools-scm derived, never hardcoded
     run: grep -q 'dynamic = \["version"\]' pyproject.toml && grep -q 'tool.setuptools_scm' pyproject.toml && ! grep -qE '^version[[:space:]]*=' pyproject.toml
   - name: the ci.yml pytest gate has no continue-on-error escape

@@ -19,6 +19,11 @@ Two layers of env vars are recognised, in priority order:
    deployments. ``SKVOICE_WHISPER_URL`` is accepted as a legacy alias
    for ``SKVOICE_STT_BASE`` (matches the README from v0.1.0).
 
+The orchestrator's own listener is controlled by ``SKVOICE_HOST`` (bind
+address, default ``127.0.0.1``) and ``SKVOICE_PORT`` (default ``18800``).
+The loopback default is deliberate: no route in ``service.py`` is
+authenticated, so widening the bind is an explicit operator decision.
+
 Defaults assume STT/TTS run on the same host as the orchestrator
 (``localhost``). For the noroc2027/skworld-100 deployment, set
 ``SKVOICE_TTS_BASE`` and ``SKVOICE_STT_BASE`` to the tailnet name of the
@@ -53,6 +58,14 @@ def _resolve_url(full_var: str, base_var: str, default_path: str,
 
 
 class Config:
+    # Bind address for the uvicorn listener. Defaults to loopback, per
+    # UNIFIED_INGRESS_STANDARD: no route in skvoice/service.py carries auth, so
+    # a wildcard bind hands every LAN and tailnet host an unauthenticated
+    # WebSocket to any agent. Set SKVOICE_HOST explicitly (a tailnet address, or
+    # 0.0.0.0 if you accept that) when an off-box client needs to reach this.
+    # Until v0.2.8 this was the string literal "0.0.0.0" in __main__.py with no
+    # override at all; see SOP.md section 5, Front-end / Exposure.
+    HOST: str = os.getenv("SKVOICE_HOST", "127.0.0.1")
     PORT: int = int(os.getenv("SKVOICE_PORT", "18800"))
     DEFAULT_AGENT: str = os.getenv("SKVOICE_AGENT", "lumina")
     # STT (faster-whisper / OpenAI-compat transcriptions endpoint).

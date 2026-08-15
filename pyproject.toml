@@ -13,7 +13,11 @@ dependencies = [
     "uvicorn[standard]>=0.24",
     "httpx>=0.25",
     "websockets>=12.0",
-    "anthropic>=0.40",
+    # NOTE: "anthropic>=0.40" was dropped in the same change that deleted
+    # skvoice/tools.py. The SDK path was retired in v0.2.6 (llm.py speaks plain
+    # OpenAI-compatible /v1/chat/completions over httpx) and nothing has
+    # imported the package since: `grep -rni anthropic skvoice/` returns only
+    # a prose mention in llm.py's docstring.
     "python-multipart>=0.0.6",
 ]
 
