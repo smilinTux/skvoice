@@ -132,7 +132,7 @@ def ensure_schedule(interval_hours: float = 6.0) -> bool:
             {
                 "name": SWEEP_JOB,
                 "type": "shell",
-                "command": "curl -sf http://localhost:18800/health > /dev/null",
+                "command": "curl -sf --retry 3 --retry-delay 3 --retry-connrefused --connect-timeout 5 http://localhost:18800/health > /dev/null",
                 "every": f"{int(interval_hours * 3600)}s",
                 "timeout": 30,
                 "notify": "on_failure",
