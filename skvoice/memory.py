@@ -5,16 +5,25 @@ import os
 import subprocess
 from pathlib import Path
 
-from skvoice.config import Config
 
 log = logging.getLogger("skvoice.memory")
 
 
-def search_memories(query: str, agent_name: str, limit: int = 3) -> str:
+def search_memories(
+    query: str, agent_name: str, limit: int = 3, reader: str = "@public"
+) -> str:
     """Search agent memories for context relevant to the query.
+
+    *reader* is who the reply is for and is ALWAYS passed to ``skmemory search
+    --reader`` (SKMEM-P0-18). It defaults to ``@public``: a call has no verified
+    operator check in this package, so it never reads owner-scope memories. An
+    skmemory CLI too old to know ``--reader`` exits non-zero, which yields no
+    memories rather than an unfiltered search.
 
     Returns a formatted string of matching memories, or empty string if none.
     """
+    if not reader or not reader.strip():
+        reader = "@public"
     if not query or len(query) < 3:
         return ""
 
@@ -29,7 +38,15 @@ def search_memories(query: str, agent_name: str, limit: int = 3) -> str:
         if Path(skmemory_bin).exists() or skmemory_bin == "skmemory":
             try:
                 result = subprocess.run(
-                    [skmemory_bin, "search", query, "--limit", str(limit)],
+                    [
+                        skmemory_bin,
+                        "search",
+                        query,
+                        "--limit",
+                        str(limit),
+                        "--reader",
+                        reader,
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=10,
@@ -37,8 +54,14 @@ def search_memories(query: str, agent_name: str, limit: int = 3) -> str:
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     memories = result.stdout.strip()
-                    log.debug("Memory search for '%s': %d chars", query[:30], len(memories))
+                    log.debug(
+                        "Memory search for '%s': %d chars", query[:30], len(memories)
+                    )
                     return f"[Relevant memories:\n{memories}]"
+                if result.returncode == 2:
+                    log.warning(
+                        "skmemory search rejected --reader (need skmemory>=0.11.94)"
+                    )
             except FileNotFoundError:
                 continue
             except subprocess.TimeoutExpired:
