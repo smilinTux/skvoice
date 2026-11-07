@@ -13,6 +13,10 @@ they record what shipped, not a retro-fitted narrative.
 
 ## [Unreleased]
 
+### Security
+
+- **Voice memory search declares a reader (SKMEM-P0-18).** `search_memories` now always passes `--reader` to `skmemory search` (default `@public`, never the owner), so a call cannot read owner-scope memories. Needs skmemory>=0.11.94; an older CLI rejects the flag and yields no memories.
+
 ### Removed
 
 - 🔴 **`skvoice/tools.py` is DELETED.** It defined five voice tools
