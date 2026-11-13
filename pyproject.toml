@@ -18,7 +18,7 @@ dependencies = [
     # OpenAI-compatible /v1/chat/completions over httpx) and nothing has
     # imported the package since: `grep -rni anthropic skvoice/` returns only
     # a prose mention in llm.py's docstring.
-    "python-multipart>=0.0.6",
+    "python-multipart>=0.0.31",
 ]
 
 [project.optional-dependencies]
